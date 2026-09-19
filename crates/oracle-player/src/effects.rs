@@ -876,39 +876,843 @@ pub fn bands(raw: &[u8]) -> Bands {
 }
 
 // -------------------------------------------------------------------------------------------------------
-// ⚑ The nudge controls, which do not ship, and why they are drawn anyway
+// ⚑ THE NUDGE CONTROLS, WHICH NOW SHIP — the RAM scratch config, and the two conditions that gate it
 // -------------------------------------------------------------------------------------------------------
 
-/// ⚑ **Why there is no live parameter nudging, in the words a person reads off the disabled control.**
+//
+// ⚑ **THE BLOCKER IS GONE, AND THE FIRST THING TO SAY IS WHICH BLOCKER.** `NOTE` §4 and the switchboard
+// design's §5.2 both said numeric nudging was *"GENUINELY BLOCKED"* and the hub ruled *"nudge controls do
+// not ship until it lands."* It landed, at [`HOOK`]: a RAM scratch parallax config, an arm cell, and
+// `Parallax_InstallScratch`, which copies the active ROM config into the scratch and re-points the
+// selector at it. The panel edits the RAM copy and the next frame picks it up. So a factor is editable in
+// place after all — in a copy, which is the same thing from a knob's point of view.
+//
+// # ⚑ IT IS THE PARALLAX CONFIG, NOT THE BGANIM BAND RECORD, AND THAT CORRECTS §5.2's OWN SENTENCE
+//
+// §5.2 promised *"two numbers, `driver` and `rate_shift`"* when the hook arrived, citing `NOTE` §2. **Those
+// two fields are not in this hook and cannot be reached by it.** They are fields of the **BgAnim band
+// record** ([`BAND_RECORD_BYTES`], the table `BgAnim_Table_Ptr` selects), and the hook that landed is the
+// **parallax** channel's: its buffer holds a `parallax_config` — a header plus band records whose fields
+// are scroll-factor shifts, not drivers. `NOTE` §6.5 says so in its own words, having noticed the same
+// thing from the other side: *"The parallel with §2's band-record advice holds, and the answer is **not**
+// the same one: there, `driver`/`rate_shift` were nudgeable and `step_mask`/`col_shift` were art geometry.
+// Here the division is **three-way**."*
+//
+// So §5.2's *"two numbers"* was a forecast made about one channel's fields from the other channel's note,
+// and it did not survive the hook actually landing. What this module offers instead is stated in
+// [`FIELDS`] and what it refuses is stated in [`NOT_OFFERED`], with `driver` and `rate_shift` among the
+// refusals — carrying the reason they are refused, which is **not** that they are geometry (they are not)
+// but that **an act's `BgAnim_Table` is ROM and no RAM copy of it exists in any shape**. That is an
+// engine-side gap, named here rather than papered over, exactly as `NOTE` §3 named the bands-off gap.
+//
+// # ⚑ THE TWO CONDITIONS, AND THE TRAP THEY EXIST FOR
+//
+// The precedent is the switchboard design's §5.3, and its lesson is one sentence: **a name resolving is
+// not storage existing.** For bands-off, `BgAnim_Table_Empty`'s NAME enters a release listing with an
+// address while its array emits nothing behind it, so a gate keyed on that one symbol would have written a
+// real address into a cell that was not the destination.
+//
+// **This hook has the identical shape and `NOTE` §6.6 measured it**: `Parallax_InstallScratch` appears in
+// the RELEASE listing with an address — its body is inside `if DEBUG == 1`, so the label collapses onto its
+// neighbour's — while `Parallax_Scratch_Config` and `Parallax_Scratch_Arm` do **not**. A panel that decided
+// "the hook is available" by resolving the proc would offer knobs on a release build and then write into
+// whatever occupies the scratch's old address, with no fault to show for it.
+//
+// So [`hook`] gates on **two** conditions and resolves the **destination first**:
+//
+// 1. **[`SCRATCH`] resolves** — the buffer this panel writes into. Genuinely absent from a release
+//    listing, because `engine/ram.emp:1811` declares it inside `if DEBUG == 1 @shape_divergent`.
+// 2. **[`SCRATCH_ARM`] resolves** — the request cell the install is asked for through. Same block, same
+//    shape gate; a build could in principle carry one and not the other, and a panel that armed a cell
+//    with no buffer behind it would report an install that copied into nothing.
+//
+// **[`SCRATCH_PROC`] is deliberately never consulted**, and
+// `the_gate_ignores_the_proc_because_its_name_ships_in_a_release_listing` is the row that keeps it that
+// way.
+//
+// # ⚑ THE OFFSETS COME OUT OF THE LISTING, NOT OUT OF THIS FILE
+//
+// `NOTE` §6.3 and §6.4 tabulate every field's offset, and transcribing them would have been the obvious
+// thing. **Two measurements say not to**, both made at this seat against the listings on this box:
+//
+// * **The scratch has already MOVED.** `NOTE` §6.1 records `Parallax_Scratch_Config` at `$FFFFEA26`;
+//   `s4.debug.lst` as built on 2026-09-18 puts it at **`$FFFFEA46`**. It is at the RAM tail inside a
+//   `@shape_divergent` group, so it moves whenever any other debug-RAM group changes size — which is an
+//   ordinary aeon commit, not a mistake. A [`Channel::drift`]-style positional refusal on this symbol would
+//   refuse the whole feature on a healthy build, so the noted addresses are kept as **witnesses only**
+//   ([`SCRATCH_NOTED_ADDR`]) and nothing refuses on them.
+// * **The band-record stride is PER GAME.** It is 32 bytes in `s4.debug` and **10** in `demo.debug`
+//   (measured: span `$FFFFE60E - $FFFFE550` = 190 = 30 + 10 × 16). `NOTE` §6.4's *"`sizeof(band_record)`
+//   is **32** for this game"* says so, and a 32 transcribed here would have addressed demo's band 1 inside
+//   its band 3.
+//
+// What the listing publishes instead is **the struct layout itself**, as equates: `parallax_config_len`,
+// `parallax_config_pcfg_layer_mask`, `band_entry_band_factor_a_s1`, `MAX_PARALLAX_BANDS`. Those reach a
+// client through `emulator/lookup_equate` (§11.36, already served and already vendored — no contract change
+// was needed for this parcel). So every offset this module writes at is **resolved per gesture from the
+// listing the machine is running with**, exactly as every address already is, and the stride is *derived*
+// from two symbols and one equate rather than believed:
+//
+// ```text
+// span   = Parallax_Scratch_Config_End - Parallax_Scratch_Config
+// stride = (span - parallax_config_len) / MAX_PARALLAX_BANDS
+// ```
+//
+// which is the same arithmetic `engine/ram.emp` sizes the buffer with, run backwards. It yields 32 on
+// `s4.debug` and 10 on `demo.debug`, and a build that widens a band record cannot leave this module
+// addressing the old stride. **A non-exact division is a refusal, never a rounded stride**: it means the
+// premise (one header, `MAX_PARALLAX_BANDS` equal-sized records, nothing else in the span) does not hold
+// for this build, and a rounded stride would write into the middle of fields forever after.
+//
+// # ⚑ EDITING A SCRATCH THAT IS NOT THE CURRENT CONFIG IS THE SILENT NO-OP THIS WHOLE SURFACE EXISTS AGAINST
+//
+// The scratch is ordinary work RAM. Writing a byte into it always succeeds and means **nothing** unless
+// `Parallax_Current_Config` points at it. Two ordinary events leave it that way: nobody has armed yet, and
+// `NOTE` §6.6's consequence 1 — **crossing a section boundary EVICTS the scratch**, because
+// `Parallax_CheckBoundary` installs the new section's own ROM preset exactly as it always did.
+//
+// So [`nudge`] **re-checks the install before every write** and refuses when it does not hold. That check
+// is not a nicety: without it the panel would let a person turn a knob and watch nothing happen after
+// walking across a boundary, which is precisely the failure `NOTE` §0 was written about.
+//
+// # ⚑ "DID THE INSTALL TAKE" IS ANSWERED BY THE FACT, NOT BY A STATUS BYTE
+//
+// `NOTE` §6.2 is explicit that the arm cell is a **request** byte and not a status byte — the engine clears
+// it as it services it, whether the install took or was refused — and that the success test is reading
+// `Parallax_Current_Config` and comparing it against `Parallax_Scratch_Config`. That is *"the fact itself
+// rather than a report of it"*, and [`Installed`] is that comparison and nothing else.
+//
+// The arm byte is read back too, and **only to separate two failures that the comparison alone renders
+// identical**:
+//
+// | `Current_Config` | arm byte | what it is |
+// |---|---|---|
+// | == the scratch | (either) | **installed** |
+// | != the scratch | cleared | the engine **serviced and REFUSED** it: no active config, or the config's `pcfg_band_count` exceeds `MAX_PARALLAX_BANDS`. `Parallax_InstallScratch`'s own `Out:` — *"nothing written … a refusal never clamps"* |
+// | != the scratch | still set | the arm was **never serviced**: `Parallax_Update` did not reach its poll this frame. `NOTE` §6.6's banner names this exactly for `games/demo`, where `Parallax_Update` has no caller at all — *"arming on demo leaves the arm cell SET for ever, which reads like a dirty refusal and is nothing of the kind"* |
+//
+// That is two facts read off the machine yielding three states. No byte was invented and no byte is
+// interpreted as a status.
+//
+// ⚑ **The comparison is masked to 24 bits on BOTH sides.** `Parallax_Current_Config` holds the full
+// sign-extended long (`$FFFFEA46`) and a listing may resolve the symbol either way; `NOTE` §6.2 warns that
+// *"a raw compare is a false mismatch, and it was the first thing this lane's own probe got wrong."* The
+// space of values is the whole question here rather than the pair that happened to be measured: masking
+// both sides is correct for all four combinations of spelling, and comparing raw is correct for one.
+//
+
+/// **The commit that landed the parallax scratch hook**, cited separately from [`NOTE`] because it
+/// postdates the note's own §4 and inverts it: §4 said *"until it lands, a nudge control has nothing to
+/// write and should not ship"*, and this is it landing.
 ///
-/// # The choice, and it was between two honest options rather than three
+/// Read firsthand out of aeon's engine rather than out of the doc, and for a stated reason: the note's §4
+/// header says *"LANDED"* in one sentence and *"are on branch `parcel/live-effects-hook`"* in the next,
+/// which are different claims. `engine/ram.emp:1811` and `engine/level/parallax.emp:4208` settle it.
+pub const HOOK: &str = "aeon 935c33cf";
+
+/// The RAM working copy a nudge writes into. **DEBUG shapes only** — `engine/ram.emp:1811` declares it
+/// inside `if DEBUG == 1 @shape_divergent`, so a release build emits zero bytes for it and its name is
+/// absent from a release listing. Condition 1 of [`hook`]'s gate, and resolved **first**.
+pub const SCRATCH: &str = "Parallax_Scratch_Config";
+
+/// The `mark` one past the scratch's end. Its distance from [`SCRATCH`] is the buffer's size, which is
+/// where [`Hook::stride`] comes from.
+pub const SCRATCH_END: &str = "Parallax_Scratch_Config_End";
+
+/// The request cell. Nonzero asks `Parallax_Update`'s head poll to install the scratch; the engine clears
+/// it as it services it. **DEBUG shapes only**, same block. Condition 2 of [`hook`]'s gate.
+pub const SCRATCH_ARM: &str = "Parallax_Scratch_Arm";
+
+/// ⚑ **The proc, named here ONLY so the reason it is not the gate has somewhere to live.**
 ///
-/// The owner's card asks for *"numeric nudges"*. They cannot be built: `Parallax_Current_Config` points
-/// at **ROM**, so a factor cannot be edited in place, and aeon's hook for it — a RAM scratch config plus
-/// a copy-and-repoint entry, the shape `Raster_Buf_A`/`Raster_Buf_B` already use — is **sized and not
-/// started** ([`NOTE`] §4). The hub's ruling is explicit: *"nudge controls do not ship until it lands."*
+/// `NOTE` §6.6 measured it: this name **appears in the RELEASE listing with an address** while [`SCRATCH`]
+/// and [`SCRATCH_ARM`] do not, because the proc's body — the `rts` included — is inside `if DEBUG == 1`
+/// and an empty label collapses onto its neighbour's address. Gating on it would offer knobs on a release
+/// build. Nothing in this module resolves it.
+pub const SCRATCH_PROC: &str = "Parallax_InstallScratch";
+
+/// [`SCRATCH`]'s address as [`NOTE`] §6.1 records it, **kept as a witness and never compared against**.
 ///
-/// Shipping a slider that silently does nothing was never on the table; aeon's note bars it in the same
-/// sentence the hub ruled on: *"a slider that silently does nothing is worse than an absent one."*
+/// The distinction from [`Channel::noted_addr`] is load-bearing rather than pedantic, and it is measured:
+/// the note says `$FFFFEA26` and `s4.debug.lst` built 2026-09-18 says `$FFFFEA46`. The symbol is at the
+/// RAM tail inside a size-varying `@shape_divergent` group, so it moves on ordinary aeon commits, and a
+/// drift refusal here would refuse a healthy build. `Parallax_Current_Config` is engine RAM at a fixed
+/// offset and is a different case, which is why *it* is still drift-checked.
+pub const SCRATCH_NOTED_ADDR: u32 = 0xFFFF_EA26;
+
+/// The equate giving `sizeof(parallax_config)` — the header's length, and band record 0's offset.
+pub const CONFIG_LEN_EQU: &str = "parallax_config_len";
+
+/// The equate giving the number of band records the scratch is reserved for. `16` in both shipped games.
+pub const MAX_BANDS_EQU: &str = "MAX_PARALLAX_BANDS";
+
+/// The equate prefix the `parallax_config` header's field offsets are published under.
+pub const HEADER_EQU_PREFIX: &str = "parallax_config_";
+
+/// The equate prefix a band record's field offsets are published under.
 ///
-/// So the choice was **omit the control** or **draw it disabled with the reason**, and this module draws
-/// it. The argument for omitting is that an absent control makes no promise. The argument against is
-/// stronger and it is this panel's own thesis applied to itself: the owner asked for nudges by name, and
-/// a panel that simply has none reads as *we forgot* or *we could not find it*, which sends him to ask. A
-/// disabled control with one readable line answers the question where it is asked, and it disappears by
-/// itself the day the hook lands — nobody has to remember to add it back.
+/// ⚑ **`band_entry`, not `band_record`.** The struct the scratch strides by is `band_record` — the legacy
+/// `band_entry` plus this game's capability tails — and **only the `band_entry` half publishes equates**
+/// (measured: `s4.debug.lst` carries nine `band_entry_*` rows and `band_entry_len`, and no `band_record_*`
+/// row at all). Every field this module offers is inside that half, which is why the offsets resolve; the
+/// tails' fields are in [`NOT_OFFERED`] for other reasons anyway, so nothing is lost. [`Hook::stride`] is
+/// derived from the span rather than from `band_entry_len`, precisely because the two differ.
+pub const BAND_EQU_PREFIX: &str = "band_entry_";
+
+/// Which half of the buffer a [`Field`] lives in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Where {
+    /// The `parallax_config` header, once. Offset is the equate's value.
+    Header,
+    /// One band record. Offset is `header_len + stride * index + equate`.
+    Band,
+}
+
+/// **One field a person may turn**, with the equate its offset is resolved from and the range that is
+/// coherent rather than merely accepted.
 ///
-/// # Two controls when it lands, not four
+/// There is no offset in here on purpose. See this section's header: the offsets are the listing's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Field {
+    /// The stable key a gesture names this field by. Never drawn.
+    pub key: &'static str,
+    /// What a person reads on the control.
+    pub label: &'static str,
+    /// The equate whose value is this field's offset, **without** the prefix.
+    pub equate: &'static str,
+    /// [`Where`] the field lives.
+    pub at: Where,
+    /// 1 or 2, as the struct declares it and as the door takes it.
+    pub width: u8,
+    /// The inclusive range that is coherent. **Not** the range the door accepts: the door accepts every
+    /// value a `u8` can hold, and `NOTE` §6.4 says which of them mean something.
+    pub range: (u32, u32),
+    /// What turning it does, and what the ends mean. Drawn as the control's hover.
+    pub what: &'static str,
+}
+
+impl Field {
+    /// The equate name this field's offset resolves from, prefix included.
+    pub fn equate_name(&self) -> String {
+        let prefix = match self.at {
+            Where::Header => HEADER_EQU_PREFIX,
+            Where::Band => BAND_EQU_PREFIX,
+        };
+        format!("{prefix}{}", self.equate)
+    }
+}
+
+/// ⚑ **THE FIELDS THIS PANEL OFFERS**, and every one of them is in `NOTE` §6.5's *"free knobs"* class:
+/// nothing else in the config depends on it, so turning it produces a picture whose parts still agree.
 ///
-/// [`NOTE`] §2: only `driver` and `rate_shift` are meaningful. `step_mask` and `col_shift` are geometry
-/// derived from the art's shape, and moving either without moving the art gives a cadence the art does
-/// not have — *"a picture rather than an effect"*. `vram_dest` and `banks` are placement. Written down
-/// here so the surface is not designed four-wide and then taken apart.
-pub const NUDGE_BLOCKED: &str =
-    "Numeric nudging is not available yet. A scene's factors live in ROM, so they cannot be edited in \
-     place; aeon is adding a RAM scratch config that this panel will edit instead. Nothing here would \
-     have any effect until that lands, so the control is shown off rather than shipped doing nothing. \
-     When it arrives it is two numbers, driver and rate shift, and not the whole record.";
+/// The three-way division §6.5 draws is the whole reason this list is short. An *inert* field is a slider
+/// that does nothing — the defect `NOTE` §0 exists to prevent — and a *coupled* field produces a picture
+/// whose parts disagree, which is a different and subtler wrong. Both classes are in [`NOT_OFFERED`] with
+/// their reasons, because a reader who wants `band_top_plane` deserves to find out why it is absent here
+/// rather than conclude it was forgotten.
+pub const FIELDS: &[Field] = &[
+    Field {
+        key: "layer_mask",
+        label: "layer mask",
+        equate: "pcfg_layer_mask",
+        at: Where::Header,
+        width: 2,
+        range: (0x0000, 0xFFFF),
+        what: "bit i = band i active. Clearing a bit drops that band and it inherits the band above. \
+               NOTE 6.3 calls this the best knob here: free, instant, reversible",
+    },
+    Field {
+        key: "deform_speed_fg",
+        label: "FG deform speed",
+        equate: "pcfg_deform_speed_fg",
+        at: Where::Header,
+        width: 1,
+        range: (0, 255),
+        what: "Plane A horizontal-deform phase increment per frame. 1 is what a scene with no table emits",
+    },
+    Field {
+        key: "deform_speed_bg",
+        label: "BG deform speed",
+        equate: "pcfg_deform_speed_bg",
+        at: Where::Header,
+        width: 1,
+        range: (0, 255),
+        what: "the same for Plane B",
+    },
+    Field {
+        key: "bob",
+        label: "bob",
+        equate: "pcfg_bob",
+        at: Where::Header,
+        width: 1,
+        range: (0, 255),
+        what: "packed, and the WHOLE BYTE 0 means no bob — the sentinel is the byte, not a nibble. \
+               Otherwise bits 7-4 are the amplitude shift (legal 1..8) and bits 3-0 the period shift \
+               (legal 0..8), so a nonzero byte outside those nibble ranges is a sway the engine will \
+               still draw and nobody authored",
+    },
+    Field {
+        key: "factor_a_s1",
+        label: "A shift 1",
+        equate: "band_factor_a_s1",
+        at: Where::Band,
+        width: 1,
+        range: (0, 15),
+        what: "Plane A scroll shift 1 — NOTE 6.4's main knob. 0..14 is a shift; 15 means whole-factor \
+               zero, the band locked to the camera",
+    },
+    Field {
+        key: "factor_a_s2",
+        label: "A shift 2",
+        equate: "band_factor_a_s2",
+        at: Where::Band,
+        width: 1,
+        range: (0, 15),
+        what: "Plane A scroll shift 2. 0..14 is a shift; 15 means single-term, use shift 1 alone",
+    },
+    Field {
+        key: "factor_b_s1",
+        label: "B shift 1",
+        equate: "band_factor_b_s1",
+        at: Where::Band,
+        width: 1,
+        range: (0, 15),
+        what: "Plane B scroll shift 1, same sentinels",
+    },
+    Field {
+        key: "factor_b_s2",
+        label: "B shift 2",
+        equate: "band_factor_b_s2",
+        at: Where::Band,
+        width: 1,
+        range: (0, 15),
+        what: "Plane B scroll shift 2, same sentinels",
+    },
+    Field {
+        key: "factor_ops",
+        label: "ops",
+        equate: "band_factor_ops",
+        at: Where::Band,
+        width: 1,
+        range: (0, 3),
+        what: "bit 0: Plane A adds (0) or subtracts (1) the second term. bit 1: Plane B, the same. \
+               Bits 2-7 are unread",
+    },
+    Field {
+        key: "phase_offset",
+        label: "phase",
+        equate: "band_phase_offset",
+        at: Where::Band,
+        width: 1,
+        range: (0, 255),
+        what: "added to this band's deform sample index, to desync it from its neighbours",
+    },
+];
+
+/// **One field this panel does NOT offer, and the reason**, so an absence is never mistaken for an
+/// oversight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotOffered {
+    /// The field, as `NOTE` and the engine spell it.
+    pub field: &'static str,
+    /// Which of the reasons it is. Drawn as a short tag before [`NotOffered::why`].
+    pub class: &'static str,
+    /// Why, in the words a person can act on.
+    pub why: &'static str,
+}
+
+/// ⚑ **THE REFUSALS, WRITTEN DOWN WHERE THE OFFERS ARE**, because a panel that simply lacks a control for
+/// `driver` reads as *we forgot* — the same argument that kept the disabled control on screen for the
+/// fortnight this hook took to land.
+///
+/// The classes are `NOTE` §6.5's, plus one this parcel added because §6.5 could not have known it:
+/// **wrong channel**. The two fields the switchboard design's §5.2 promised by name are in it.
+pub const NOT_OFFERED: &[NotOffered] = &[
+    NotOffered {
+        field: "driver",
+        class: "wrong channel",
+        why: "it is a BgAnim band-record field, not a parallax-config one, and this hook is the parallax \
+              channel's. An act's BgAnim_Table is ROM and NO RAM copy of it exists in any shape, so there \
+              is nothing to edit in place on that channel. The switchboard design's 5.2 promised this \
+              field by name when the hook landed; the hook that landed reaches a different struct. \
+              Closing it would take a BgAnim scratch of the same shape as this one, which is an aeon ask \
+              rather than a panel change",
+    },
+    NotOffered {
+        field: "rate_shift",
+        class: "wrong channel",
+        why: "as driver, and for the same reason: same record, same ROM, same absent scratch",
+    },
+    NotOffered {
+        field: "step_mask / col_shift",
+        class: "geometry",
+        why: "BgAnim band fields again, and refused twice over: NOTE 2 rules them out as geometry derived \
+              from the art's shape, and moving either without moving the art gives a picture rather than \
+              an effect",
+    },
+    NotOffered {
+        field: "pcfg_v_factor_fg",
+        class: "inert",
+        why: "RESERVED, with NO runtime reader at all: the v1 pipeline always sets fg_vscroll = camY. A \
+              control on it would be exactly the silent no-op NOTE 0 exists to prevent",
+    },
+    NotOffered {
+        field: "bc_step / bc_rem / bc_span / bc_pad",
+        class: "inert",
+        why: "the first three are derived every frame — the curve hoist recomputes all of them into the \
+              engine's shadow copy each pass, so the ROM image is always 0 and a write is overwritten \
+              before it is read. bc_pad is alignment and is read by nothing at all",
+    },
+    NotOffered {
+        field: "pcfg_transition",
+        class: "inert here",
+        why: "read at install time and nowhere else, and the install forces it to 1 deliberately — a \
+              scene authoring 0 would be STAGED as a lerp target instead of installed. Writing it changes \
+              nothing until the next arm and breaks that one if set to 0",
+    },
+    NotOffered {
+        field: "pcfg_band_count",
+        class: "coupled",
+        why: "downward only, and not worth a control. Writing it ABOVE the count the install copied makes \
+              the walk read scratch bytes that were never written, because Parallax_InstallScratch copies \
+              this config's own bands rather than the ceiling",
+    },
+    NotOffered {
+        field: "pcfg_v_factor_bg / pcfg_v_center_y / pcfg_v_offset",
+        class: "coupled",
+        why: "the vertical mapping, and NOTHING re-derives it. Every band_top_plane was computed through \
+              these three at build time and stays where the build put it, so turning one slides the \
+              camera's idea of the plane against the art the layers were registered on. NOTE 6.5 calls it \
+              the one place a slider produces a picture whose parts disagree",
+    },
+    NotOffered {
+        field: "band_top_plane",
+        class: "coupled",
+        why: "the records must stay in strictly ascending top order, because the fill reads band i+1's \
+              top as band i's end. A single-field control cannot keep that invariant",
+    },
+    NotOffered {
+        field: "brm_hshift",
+        class: "coupled",
+        why: "H = 1 << brm_hshift is the remap ladder table's own geometry. Changing it without changing \
+              the ladder walks off the table",
+    },
+    NotOffered {
+        field: "pcfg_deform_table_* / brm_ladder",
+        class: "pointers",
+        why: "their one safe written value is 0, which is an on/off rather than a nudge. A non-table \
+              address is read as 256 signed bytes: noise, not a fault, and not an effect either",
+    },
+];
+
+/// ⚑ **Why the other two channels have no knobs**, in the one line the panel draws on them.
+///
+/// Kept beside [`NOT_OFFERED`] rather than in the renderer, for the module header's reason: a sentence
+/// about the engine belongs where the engine's facts are written down. It is the same finding as the first
+/// two [`NOT_OFFERED`] rows, said once for a person who is on the wrong tab rather than looking for a
+/// field.
+pub const WRONG_CHANNEL: &str =
+    "The hook that landed is a RAM copy of a PARALLAX config, and only that struct's numbers can be \
+     edited in place. A raster program is a ROM instruction stream and an act's BgAnim band table is ROM \
+     with no RAM copy in any build shape, so there is nothing on either channel for a knob to write. \
+     Selecting still works on all three.";
+
+/// ⚑ **What [`hook`] found**, and every number in it was resolved or derived from the loaded listing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hook {
+    /// [`SCRATCH`]'s 32-bit `rawAddr`, which is the spelling `Parallax_Current_Config` holds.
+    pub scratch_raw: u32,
+    /// The buffer's size in bytes: `SCRATCH_END - SCRATCH`.
+    pub span: u32,
+    /// `parallax_config_len` — the header's length, and band record 0's offset.
+    pub header_len: u32,
+    /// `MAX_PARALLAX_BANDS` — how many records the buffer is reserved for.
+    pub max_bands: u32,
+    /// **Derived, never transcribed**: `(span - header_len) / max_bands`. 32 on `s4.debug`, 10 on
+    /// `demo.debug`. See this section's header for why a transcribed 32 would have been wrong.
+    pub stride: u32,
+}
+
+impl Hook {
+    /// The byte offset into the scratch that `field` occupies for `band`, given the equate's value.
+    ///
+    /// `band` is ignored for a [`Where::Header`] field, which is why it is not an `Option`: every caller
+    /// has a band index selected and a header field simply does not read it.
+    pub fn offset(&self, field: &Field, band: u32, equate: u32) -> u32 {
+        match field.at {
+            Where::Header => equate,
+            Where::Band => self.header_len + self.stride * band + equate,
+        }
+    }
+}
+
+/// ⚑ **THE GATE. Two conditions, destination first**, or a refusal that reads as *your build has no
+/// scratch* rather than as *this is broken*.
+///
+/// The ordering is the switchboard design's §5.3 discipline applied to the shape it was written about: the
+/// destination is resolved before anything else is asked of the listing, so a build that carries
+/// [`SCRATCH_PROC`]'s name (every release build does) and not the buffer refuses on the buffer. See this
+/// section's header for the measurement.
+///
+/// The refusals are deliberately three rather than one, because they send a person to three different
+/// places: the wrong ROM shape, a listing that predates the hook, and a buffer whose size does not
+/// factor. A single *"nudging unavailable"* would send them to none of them.
+pub fn hook(c: &mut impl Caller) -> Result<Hook, Refusal> {
+    // ⚑ CONDITION 1, FIRST: the destination. §5.3's ordering, and the reason a release build's
+    // `Parallax_InstallScratch` row cannot mislead this function.
+    let scratch_raw = match resolve(c, SCRATCH) {
+        Ok((_, raw)) => raw,
+        Err(_) => return Err(no_scratch()),
+    };
+    // ⚑ CONDITION 2: the request cell. Same `if DEBUG == 1 @shape_divergent` block, asked separately —
+    // a name resolving is not storage existing, and one of the two resolving is not both.
+    if resolve(c, SCRATCH_ARM).is_err() {
+        return Err(no_scratch());
+    }
+    let (_, end_raw) = resolve(c, SCRATCH_END)?;
+    let header_len = equate(c, CONFIG_LEN_EQU)?;
+    let max_bands = equate(c, MAX_BANDS_EQU)?;
+    // The span, and the two ways it can be unusable. Both are refusals with the arithmetic in them,
+    // because a reader who is told "the scratch does not factor" and not the four numbers has nothing to
+    // check.
+    let span = end_raw.wrapping_sub(scratch_raw);
+    let coherent = span > header_len && max_bands > 0 && (span - header_len) % max_bands == 0;
+    if !coherent {
+        return Err(Refusal::window(
+            "scratchDoesNotFactor",
+            format!(
+                "`{SCRATCH_END}` - `{SCRATCH}` is {span} bytes, `{CONFIG_LEN_EQU}` is {header_len} and \
+                 `{MAX_BANDS_EQU}` is {max_bands}, and ({span} - {header_len}) does not divide by \
+                 {max_bands}. The band-record stride is DERIVED from those three ({HOOK}, \
+                 `engine/ram.emp`'s own sizing run backwards) rather than transcribed, because it is 32 \
+                 bytes in s4.debug and 10 in demo.debug. A stride that did not divide exactly would be \
+                 rounded, and a rounded stride writes into the middle of a field on every band but the \
+                 first. Nothing was written"
+            ),
+            Some(
+                "check that the loaded listing is the one this ROM was built with; if it is, the scratch \
+                 layout has changed shape and this panel's derivation needs re-reading against \
+                 `engine/ram.emp`"
+                    .to_string(),
+            ),
+        ));
+    }
+    Ok(Hook {
+        scratch_raw,
+        span,
+        header_len,
+        max_bands,
+        stride: (span - header_len) / max_bands,
+    })
+}
+
+/// ⚑ **The refusal that must read as *your listing or your build has no scratch***, not as a defect.
+///
+/// The switchboard design's §5.3 paid for this wording once already: the bands-off target landed at 16:48Z
+/// and the owner's window had a 14:53Z listing, so a correct refusal looked like a broken feature. The
+/// same two doors are open here and a third is not — a release ROM genuinely does not have this RAM — so
+/// the line says which shape has it, which symbol is missing, that the feature exists in the engine, and
+/// what to do. It never says the word *broken* and never suggests an alternative address.
+fn no_scratch() -> Refusal {
+    Refusal::window(
+        "noScratchInThisBuild",
+        format!(
+            "`{SCRATCH}` and `{SCRATCH_ARM}` are not both in the loaded listing, so this build has \
+             nowhere for a nudge to land and nothing was written. This is not a fault: the scratch is \
+             declared inside `if DEBUG == 1 @shape_divergent` ({HOOK}, `engine/ram.emp:1811`), so a \
+             RELEASE build emits ZERO bytes for it and a release listing carries neither name. Selecting \
+             a scene still works here — `Parallax_Current_Config` is in both shapes — and only editing \
+             one's numbers needs the scratch. ⚠ `{SCRATCH_PROC}` DOES appear in a release listing with an \
+             address, because its body is DEBUG-gated and an empty label collapses onto its neighbour's; \
+             this panel deliberately does not resolve it, since a gate keyed on that name would offer \
+             knobs on a build with no buffer behind them"
+        ),
+        Some(format!(
+            "run the DEBUG ROM (s4.debug.bin) and load the listing that build produced. If you are \
+             already on a debug build, the listing predates {HOOK}: rebuild, then load the new listing"
+        )),
+    )
+}
+
+/// One equate's value out of the loaded listing, by name.
+///
+/// `emulator/lookup_equate` (§11.36) answers `value` as a JSON **number**, and its two failure codes are
+/// deliberately different — `-32012` no listing, `-32013` this listing does not publish that name — so the
+/// refusal carried up is the server's own and a person can tell *you forgot `load_symbols`* from *your
+/// build renamed the constant*.
+fn equate(c: &mut impl Caller, name: &str) -> Result<u32, Refusal> {
+    let v = c.call(
+        "emulator/lookup_equate",
+        serde_json::json!({ "name": name }),
+    )?;
+    v["value"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| {
+            Refusal::local(format!(
+                "the bus resolved the equate `{name}` and its `value` was {:?}, which is not a number \
+                 this panel can use as an offset. Nothing was written",
+                v["value"]
+            ))
+        })
+}
+
+/// ⚑ **Whether the scratch IS the current config**, which is the whole of *did the install take*.
+///
+/// `NOTE` §6.2: the arm cell is a request byte and not a status byte, and the success test is this
+/// comparison. Both sides are masked to 24 bits — see this section's header for why raw is wrong for three
+/// of the four spelling combinations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Installed {
+    /// What `Parallax_Current_Config` holds.
+    pub current: u32,
+    /// [`Hook::scratch_raw`], for the sentence.
+    pub scratch: u32,
+    /// The request byte, read back **only** to separate *serviced and refused* from *never serviced*.
+    pub arm: u8,
+}
+
+impl Installed {
+    /// Masked to the 24-bit bus address on both sides, which is the comparison `NOTE` §6.2 prescribes.
+    pub fn took(&self) -> bool {
+        self.current & 0x00FF_FFFF == self.scratch & 0x00FF_FFFF
+    }
+
+    /// **The line a person reads to know whether a knob will do anything**, and it is one of exactly
+    /// three sentences. See this section's header for the table these come from.
+    pub fn line(&self) -> String {
+        if self.took() {
+            return format!(
+                "the scratch IS the current config: `{}` holds {:#010X}, which is `{SCRATCH}`. A nudge \
+                 lands on the next frame.",
+                PARALLAX.selector, self.current
+            );
+        }
+        if self.arm != 0 {
+            return format!(
+                "the arm was NEVER SERVICED: `{SCRATCH_ARM}` still reads {:#04X} after a frame, and the \
+                 engine clears it as it services it. `Parallax_Update` did not reach its head poll — it \
+                 is not running this frame at all (no act loaded, or a game with no caller for it: \
+                 {HOOK} names games/demo as exactly that case). `{}` still holds {:#010X}. This is not a \
+                 refusal and nothing is dirty.",
+                self.arm, PARALLAX.selector, self.current
+            );
+        }
+        format!(
+            "the engine SERVICED the arm and REFUSED the install: `{SCRATCH_ARM}` was cleared and `{}` \
+             still holds {:#010X} rather than `{SCRATCH}` ({:#010X}). `{SCRATCH_PROC}`'s own Out: says \
+             that means either no config was active (parallax off) or the active config's \
+             `pcfg_band_count` exceeds `{MAX_BANDS_EQU}` — and that NOTHING was written, because a \
+             refusal never clamps.",
+            PARALLAX.selector, self.current, self.scratch
+        )
+    }
+}
+
+/// **Arm the install, run one frame, and read back whether it took.**
+///
+/// ⚑ **A frame is run deliberately and it is the only way in.** `NOTE` §6.2: *"An Aether client drives a
+/// bus, not a call stack: it can write a byte and run a frame and cannot force a `jsr`."* One frame is
+/// enough rather than two because `Parallax_Update` polls the arm **at its head, ahead of its own config
+/// select**, so the install lands on that same frame — a panel that armed and stepped one frame under the
+/// opposite assumption would read the ROM pointer back and conclude the hook did nothing.
+///
+/// The machine is paused by the caller and the frame is run through the served method on the paused
+/// machine, which is [`crate::screen_pick`]'s established shape. It is not a write to a running machine:
+/// the frame is asked for, one, and the machine stops again.
+pub fn arm(c: &mut impl Caller) -> Result<(Hook, Installed), Refusal> {
+    let h = hook(c)?;
+    // The selector's own guards, unchanged and reused: this reads and depends on
+    // `Parallax_Current_Config`, so the channel's drift refusal and the cursor guard both apply.
+    let sel = available(c, &PARALLAX)?;
+    if let Some(r) = PARALLAX.drift(sel) {
+        return Err(r);
+    }
+    if let Some(r) = forbidden(SCRATCH_ARM, h.scratch_raw.wrapping_add(h.span)) {
+        return Err(r);
+    }
+    c.call(
+        "emulator/write_memory",
+        serde_json::json!({ "symbol": SCRATCH_ARM, "value": 1, "width": 1 }),
+    )?;
+    c.call("emulator/run_frames", serde_json::json!({ "frames": 1 }))?;
+    let installed = took(c, &h)?;
+    Ok((h, installed))
+}
+
+/// Read the two cells [`Installed`] is made of. A pure read; no frame is run.
+pub fn took(c: &mut impl Caller, h: &Hook) -> Result<Installed, Refusal> {
+    let current = read_u32_at_symbol(c, PARALLAX.selector)?;
+    let arm = read_u8_at_symbol(c, SCRATCH_ARM)?;
+    Ok(Installed {
+        current,
+        scratch: h.scratch_raw,
+        arm,
+    })
+}
+
+/// ⚑ **What the scratch holds right now**, so the controls show the numbers they are editing rather than
+/// numbers this panel remembers.
+///
+/// `NOTE` §6.2 asks for exactly this and says why: *"The source is NOT necessarily the config the pointer
+/// held when you armed"* — the arm frame runs the section boundary check too, and
+/// `Parallax_Active_Config` returns the *target* during a transition, so the hook copies whatever was
+/// active when `Parallax_Update` reached the poll. *"A panel that wants to know what it is editing reads
+/// the scratch after the install rather than assuming it holds the config it last displayed."*
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scratch {
+    /// `pcfg_band_count` as the install left it. The bound on the band selector.
+    pub band_count: u32,
+    /// The raw buffer, header and the bands the count claims. Field values are read out of it by offset.
+    pub raw: Vec<u8>,
+}
+
+impl Scratch {
+    /// One field's current value, or `None` when the read did not reach that far.
+    pub fn value(&self, h: &Hook, field: &Field, band: u32, equate: u32) -> Option<u32> {
+        let off = h.offset(field, band, equate) as usize;
+        let w = field.width as usize;
+        if off + w > self.raw.len() {
+            return None;
+        }
+        Some(match w {
+            1 => self.raw[off] as u32,
+            _ => u32::from(u16::from_be_bytes([self.raw[off], self.raw[off + 1]])),
+        })
+    }
+}
+
+/// **Read the scratch back**, header plus the bands `pcfg_band_count` claims.
+///
+/// Two reads rather than one sized guess: the count first, then exactly `header + stride * count` bytes.
+/// Reading the whole reservation would be the easier call and would ask the bus for bytes the install
+/// never wrote — `Parallax_InstallScratch` copies *"the header plus this config's OWN bands, not the
+/// ceiling"* — and showing those as field values would be this panel presenting uninitialised RAM as a
+/// scene's numbers.
+///
+/// A count above [`Hook::max_bands`] is **reported, not trusted**: it is clamped for the read and the
+/// count is carried through unchanged, so the caller can say the buffer disagrees with the engine's own
+/// ceiling instead of reading past the span.
+pub fn read_scratch(c: &mut impl Caller, h: &Hook) -> Result<Scratch, Refusal> {
+    let head = read_bytes_at_symbol(c, SCRATCH, h.header_len as usize)?;
+    let count_off = equate(c, &format!("{HEADER_EQU_PREFIX}pcfg_band_count"))? as usize;
+    let band_count = *head.get(count_off).ok_or_else(|| {
+        Refusal::local(format!(
+            "`{HEADER_EQU_PREFIX}pcfg_band_count` resolves to offset {count_off}, which is outside the \
+             {} header bytes `{CONFIG_LEN_EQU}` claims. Nothing was decoded",
+            h.header_len
+        ))
+    })? as u32;
+    let read_bands = band_count.min(h.max_bands);
+    let want = (h.header_len + h.stride * read_bands).min(h.span) as usize;
+    let raw = read_bytes_at_symbol(c, SCRATCH, want)?;
+    Ok(Scratch { band_count, raw })
+}
+
+/// ⚑ **Turn one knob**, or refuse and say which of the five reasons it is.
+///
+/// The order the guards run in, and each one exists because of a specific way this could lie:
+///
+/// 1. **[`hook`]** — this build has the buffer and its layout factors.
+/// 2. **The install** — [`Installed::took`]. A write into a scratch the engine is not reading is the
+///    silent no-op this whole module exists against, and a section crossing produces it without anybody
+///    doing anything wrong ([`NOTE`] §6.6 consequence 1: `Parallax_CheckBoundary` evicts the scratch).
+/// 3. **The band index**, against `pcfg_band_count` as the install actually left it — not against
+///    [`Hook::max_bands`], which is the reservation and not the scene.
+/// 4. **The value**, against [`Field::range`]. The door accepts every byte; only some of them mean
+///    something.
+/// 5. **The offset**, against [`Hook::span`], and [`forbidden`] on the resolved destination. The span
+///    check is the one that makes a per-game stride safe: a band index inside the count whose record
+///    still fell outside the buffer would be a write into whatever RAM follows.
+pub fn nudge(
+    c: &mut impl Caller,
+    field: &Field,
+    band: u32,
+    value: u32,
+) -> Result<(Hook, String), Refusal> {
+    let h = hook(c)?;
+    let state = took(c, &h)?;
+    if !state.took() {
+        return Err(Refusal::window(
+            "scratchNotInstalled",
+            format!(
+                "nothing was written, because a write would have done NOTHING: {}",
+                state.line()
+            ),
+            Some(format!(
+                "arm the scratch first. If it was armed and has stopped being the current config, the \
+                 camera crossed a section boundary — `Parallax_CheckBoundary` installs the new section's \
+                 own ROM preset, exactly as it always did — so arm it again ({HOOK})"
+            )),
+        ));
+    }
+    let s = read_scratch(c, &h)?;
+    if matches!(field.at, Where::Band) && band >= s.band_count {
+        return Err(Refusal::window(
+            "bandOutsideConfig",
+            format!(
+                "band {band} does not exist in the installed config: its `pcfg_band_count` is {}, and \
+                 `{SCRATCH_PROC}` copies the header plus THIS config's own bands rather than the \
+                 `{MAX_BANDS_EQU}` ceiling ({}). The bytes at band {band} were never written by the \
+                 install, so a value here would be edited into uninitialised RAM and read by nothing. \
+                 Nothing was written",
+                s.band_count, h.max_bands
+            ),
+            Some("pick a band below the installed count, or arm a scene with more bands".to_string()),
+        ));
+    }
+    let (lo, hi) = field.range;
+    if value < lo || value > hi {
+        return Err(Refusal::window(
+            "valueOutsideRange",
+            format!(
+                "{value} is outside {lo}..={hi}, which is what `{}` means something over: {}. The door \
+                 would accept it and the engine would read it, which is why this is refused here rather \
+                 than clipped. Nothing was written",
+                field.label, field.what
+            ),
+            None,
+        ));
+    }
+    let equ = equate(c, &field.equate_name())?;
+    let off = h.offset(field, band, equ);
+    if off + u32::from(field.width) > h.span {
+        return Err(Refusal::window(
+            "offsetOutsideScratch",
+            format!(
+                "`{}` for band {band} resolves to offset {off} + {} bytes, and the scratch is only {} \
+                 bytes ({SCRATCH_END} - {SCRATCH}). Writing it would land in whatever RAM follows the \
+                 buffer. Nothing was written",
+                field.label, field.width, h.span
+            ),
+            None,
+        ));
+    }
+    if let Some(r) = forbidden(SCRATCH, h.scratch_raw.wrapping_add(off)) {
+        return Err(r);
+    }
+    let mut req = serde_json::json!({
+        "symbol": SCRATCH,
+        "value": value,
+        "width": field.width,
+    });
+    if off > 0 {
+        req["disp"] = serde_json::json!(off);
+    }
+    c.call("emulator/write_memory", req)?;
+    Ok((
+        h,
+        format!(
+            "{}{} = {value} at `{SCRATCH}`+{off}, which the next frame reads. {}",
+            field.label,
+            match field.at {
+                Where::Band => format!(" on band {band}"),
+                Where::Header => String::new(),
+            },
+            field.what
+        ),
+    ))
+}
 
 // -------------------------------------------------------------------------------------------------------
 // ⚑ The standing statement
@@ -1379,6 +2183,28 @@ fn read_u32_at_symbol(c: &mut impl Caller, symbol: &str) -> Result<u32, Refusal>
     parse_hex_bytes(&r, 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// One byte out of the location `symbol` names, through the served reader.
+fn read_u8_at_symbol(c: &mut impl Caller, symbol: &str) -> Result<u8, Refusal> {
+    let r = c.call(
+        "emulator/read_memory",
+        serde_json::json!({ "symbol": symbol, "len": 1 }),
+    )?;
+    parse_hex_bytes(&r, 1).map(|b| b[0])
+}
+
+/// `len` bytes from the location `symbol` names.
+///
+/// By name rather than by address for the module header's reason, and it applies to reads as loudly as to
+/// writes: the server resolves the destination out of the table `emulator/load_symbols` bound, so a read
+/// cannot land in RAM a carried address has stopped naming.
+fn read_bytes_at_symbol(c: &mut impl Caller, symbol: &str, len: usize) -> Result<Vec<u8>, Refusal> {
+    let r = c.call(
+        "emulator/read_memory",
+        serde_json::json!({ "symbol": symbol, "len": len }),
+    )?;
+    parse_hex_bytes(&r, len)
+}
+
 /// `len` bytes from `addr`.
 fn read_bytes(c: &mut impl Caller, addr: u32, len: usize) -> Result<Vec<u8>, Refusal> {
     let r = c.call(
@@ -1469,6 +2295,81 @@ pub struct Panel {
     live: Option<Result<Live, String>>,
     /// The last band-table readback.
     band_read: Option<Result<Bands, String>>,
+    /// ⚑ **The nudge surface's state**, and it is deliberately `None` until a gesture asks.
+    ///
+    /// The gate ([`hook`]) costs four lookups, and running it every frame to decide whether to grey a
+    /// control would put four bus calls in a draw path for an answer that changes only when a listing is
+    /// loaded. So the controls are drawn live and the gate answers on the gesture, which is the shape
+    /// [`Off::At`]'s button already uses for the same reason: whether a symbol is in this build's listing
+    /// is a question only the bus can answer, and the answer is the refusal the gesture prints.
+    nudge: Option<Result<Nudging, String>>,
+    /// Which band record the band-scoped controls address. Bounded on use, never on entry: a stale index
+    /// from a wider scene is refused with the count in the sentence rather than silently moved.
+    band_index: u32,
+}
+
+/// **The nudge surface as one gesture left it**: what the build has, whether the scratch is installed, and
+/// the numbers it currently holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Nudging {
+    /// What [`hook`] resolved and derived.
+    pub hook: Hook,
+    /// Whether the scratch is the current config, and which of the three states it is in.
+    pub installed: Installed,
+    /// The scratch's own bytes, when it is installed. `None` when it is not — there is nothing coherent to
+    /// show, and showing the buffer's stale contents as the scene's numbers would be a readout that lies.
+    pub scratch: Option<Scratch>,
+    /// Each offered field's resolved offset, so the draw path spells no offset and runs no lookup.
+    /// `(key, offset_equate_value)`.
+    pub offsets: Vec<(&'static str, u32)>,
+}
+
+impl Nudging {
+    /// The equate value [`hook`] resolved for `field`, or `None` when this listing did not publish it.
+    pub fn equate_of(&self, field: &Field) -> Option<u32> {
+        self.offsets
+            .iter()
+            .find(|(k, _)| *k == field.key)
+            .map(|(_, v)| *v)
+    }
+
+    /// One offered field's current value, as the scratch holds it.
+    pub fn value_of(&self, field: &Field, band: u32) -> Option<u32> {
+        let s = self.scratch.as_ref()?;
+        s.value(&self.hook, field, band, self.equate_of(field)?)
+    }
+
+    /// **The derivation, said out loud**, because a stride nobody can see is a stride nobody can check.
+    ///
+    /// ⚑ **It also states when the listing has moved past [`SCRATCH_NOTED_ADDR`], and says that is fine.**
+    /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree and, on
+    /// every other symbol this module touches, a disagreement is a refusal ([`Channel::drift`]). So the
+    /// difference is named where it will be noticed, with the reason it is benign here: the symbol is at
+    /// the RAM tail inside a size-varying `@shape_divergent` group and moves on ordinary aeon commits. An
+    /// unexplained disagreement on a surface whose sibling refuses for it is a reader's hour.
+    pub fn shape_line(&self) -> String {
+        let mut s = format!(
+            "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. The stride \
+             is DERIVED from those ({} - {}) / {}, not transcribed — it is 32 on s4.debug and 10 on \
+             demo.debug.",
+            self.hook.span,
+            self.hook.scratch_raw,
+            self.hook.header_len,
+            self.hook.max_bands,
+            self.hook.stride,
+            self.hook.span,
+            self.hook.header_len,
+            self.hook.max_bands,
+        );
+        if self.hook.scratch_raw != SCRATCH_NOTED_ADDR {
+            s.push_str(&format!(
+                " {NOTE} records it at {SCRATCH_NOTED_ADDR:#010X}; this is a RAM-tail symbol in a \
+                 size-varying group, so a moved address is an ordinary rebuild rather than the drift a \
+                 selector's would be, and nothing refuses on it."
+            ));
+        }
+        s
+    }
 }
 
 impl Default for Panel {
@@ -1485,6 +2386,8 @@ impl Default for Panel {
             run: None,
             live: None,
             band_read: None,
+            nudge: None,
+            band_index: 0,
         }
     }
 }
@@ -1581,6 +2484,30 @@ impl Panel {
     /// The last band readback.
     pub fn band_read(&self) -> Option<Result<&Bands, &String>> {
         self.band_read.as_ref().map(Result::as_ref)
+    }
+
+    /// The nudge surface as the last gesture left it, or the refusal that replaced it. `None` before any
+    /// gesture — *not looked yet*, which the panel says rather than drawing an empty state that reads as
+    /// *there is nothing*.
+    pub fn nudging(&self) -> Option<Result<&Nudging, &String>> {
+        self.nudge.as_ref().map(Result::as_ref)
+    }
+
+    /// The band record the band-scoped controls address.
+    pub fn band_index(&self) -> u32 {
+        self.band_index
+    }
+
+    /// Move the band cursor. Bounded at [`Hook::max_bands`] when the gate has answered, so the control
+    /// cannot offer a record the buffer has no room for; the tighter bound (the installed
+    /// `pcfg_band_count`) is enforced in [`nudge`] with the count in the sentence, because a cursor that
+    /// silently snapped would hide a scene having fewer bands than the last one.
+    pub fn look_at_band(&mut self, i: u32) {
+        let ceiling = match self.nudge.as_ref() {
+            Some(Ok(n)) => n.hook.max_bands.saturating_sub(1),
+            _ => u32::MAX,
+        };
+        self.band_index = i.min(ceiling);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1744,6 +2671,172 @@ impl Panel {
         self.band_read =
             Some(read_bands(&mut c).map_err(|e| refusal_line(&e, "read the band table")));
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The nudge gestures. Both write, so both are pause-write-resume through `gesture_nudge`.
+    // ---------------------------------------------------------------------------------------------
+
+    /// **Arm the install**: write the request byte, run one frame, read back whether it took.
+    ///
+    /// It writes, so it is paused. It also runs a frame *while paused*, which is the only way in — see
+    /// [`arm`] — and the frame is asked for through the served method, one, on the machine the caller
+    /// stopped. [`crate::screen_pick::paused_for`] puts the run state back afterwards exactly as it does
+    /// for a selection.
+    pub fn arm_scratch(
+        &mut self,
+        machine: &mut crate::machine::Machine,
+        bus: &mut crate::bus::Bus,
+    ) {
+        self.gesture_nudge(machine, bus, "arm the scratch", |c| {
+            let (hook, installed) = arm(c)?;
+            let scratch = installed
+                .took()
+                .then(|| read_scratch(c, &hook))
+                .transpose()?;
+            Ok(Nudging {
+                hook,
+                installed,
+                scratch,
+                offsets: resolved_offsets(c, &hook),
+            })
+        });
+    }
+
+    /// **Re-read the nudge surface** without arming: the gate, the install state, and the numbers.
+    ///
+    /// Separate from [`Panel::arm_scratch`] because they are different questions and conflating them would
+    /// make *"has this build got the hook?"* unanswerable without changing the machine. This one runs no
+    /// frame and writes nothing, so it does not pause.
+    pub fn refresh_nudge(
+        &mut self,
+        machine: &mut crate::machine::Machine,
+        bus: &mut crate::bus::Bus,
+    ) {
+        let sys = machine.system_mut();
+        let mut c = crate::screen_pick::PlayerCaller { bus, sys };
+        self.nudge = Some(
+            (|| {
+                let hook = hook(&mut c)?;
+                let installed = took(&mut c, &hook)?;
+                let scratch = installed
+                    .took()
+                    .then(|| read_scratch(&mut c, &hook))
+                    .transpose()?;
+                Ok(Nudging {
+                    hook,
+                    installed,
+                    scratch,
+                    offsets: resolved_offsets(&mut c, &hook),
+                })
+            })()
+            .map_err(|e: Refusal| refusal_line(&e, "read the nudge surface")),
+        );
+    }
+
+    /// **Turn one knob.** Pause, write the one byte or word, resume, then re-read the scratch.
+    ///
+    /// The re-read is part of the gesture rather than a separate button, and it is the same argument the
+    /// selection path makes in reverse. A selection *retires* its readback because the swap it asked for
+    /// has not happened yet; a nudge's write has already landed in RAM the moment the door returns, so
+    /// re-reading shows the person the number they now have. A control left showing its own last keystroke
+    /// would be an echo, which is what this module is written against.
+    pub fn nudge_field(
+        &mut self,
+        machine: &mut crate::machine::Machine,
+        bus: &mut crate::bus::Bus,
+        field: &'static Field,
+        value: u32,
+    ) {
+        let band = self.band_index;
+        let what = format!("nudge {} to {value}", field.label);
+        self.gesture_nudge(machine, bus, &what, move |c| {
+            let (hook, _line) = nudge(c, field, band, value)?;
+            let installed = took(c, &hook)?;
+            let scratch = installed
+                .took()
+                .then(|| read_scratch(c, &hook))
+                .transpose()?;
+            Ok(Nudging {
+                hook,
+                installed,
+                scratch,
+                offsets: resolved_offsets(c, &hook),
+            })
+        });
+    }
+
+    /// ⚑ **The one pause-write-resume path for the nudge surface**, [`Panel::gesture`]'s twin.
+    ///
+    /// Not merged with it, and the reason is the return type rather than taste: [`Panel::gesture`]'s body
+    /// yields a [`Wrote`] and records a [`Change`] against a channel, and neither is right here. A nudge
+    /// is not a selection — nothing was *pointed* anywhere, and recording one as a change would make the
+    /// standing statement name a target that was never chosen. What the two DO share is
+    /// [`crate::screen_pick::paused_for`], which both call rather than re-implement, so *"the machine
+    /// really was paused while the body ran"* has one implementation in this crate and not two.
+    ///
+    /// ⚑ **A nudge does not enter the standing statement, and that is a decision rather than an
+    /// omission.** The statement names *what this panel has pointed somewhere and not put back*, and it is
+    /// drawn in the warning colour above everything. A turned knob is a state change too, but it is a
+    /// change **to a buffer this panel installed and names on screen** — the install is what the statement
+    /// would be about, and [`Installed::line`] says it in the surface's own words, permanently, where the
+    /// knobs are. Adding every knob to the top line would push the selections out of the eye's way with
+    /// rows that repeat what the control beside them already shows.
+    fn gesture_nudge(
+        &mut self,
+        machine: &mut crate::machine::Machine,
+        bus: &mut crate::bus::Bus,
+        what: &str,
+        body: impl FnOnce(&mut crate::screen_pick::PlayerCaller<'_>) -> Result<Nudging, Refusal>,
+    ) {
+        let outcome = crate::screen_pick::paused_for(machine, bus, |machine, bus| {
+            let sys = machine.system_mut();
+            body(&mut crate::screen_pick::PlayerCaller { bus, sys })
+        });
+        let (result, run) = match outcome {
+            Ok(both) => both,
+            Err(why) => {
+                self.run = None;
+                self.last = Some(Readout {
+                    head: format!(
+                        "the window could not pause the machine to {what}, so nothing was written. {why}"
+                    ),
+                    cells: Vec::new(),
+                    refused: true,
+                });
+                return;
+            }
+        };
+        self.run = Some(run);
+        self.last = Some(match &result {
+            Ok(n) => Readout {
+                head: format!("{what}: {}", n.installed.line()),
+                cells: Vec::new(),
+                refused: false,
+            },
+            Err(e) => Readout {
+                head: refusal_line(e, what),
+                cells: Vec::new(),
+                refused: true,
+            },
+        });
+        // ⚑ **A refusal REPLACES the surface rather than leaving the last good one standing.** The
+        // refusals here are all about the surface itself — no buffer in this build, the scratch evicted by
+        // a section crossing, a layout that does not factor — so keeping the previous `Nudging` beside one
+        // would draw live-looking numbers for a buffer the panel has just been told it cannot reach.
+        self.nudge = Some(result.map_err(|e| refusal_line(&e, what)));
+    }
+}
+
+/// Resolve every [`FIELDS`] entry's offset equate once, for a draw path that must spell none of them.
+///
+/// A field whose equate this listing does not publish is **left out**, not defaulted to zero: offset 0 is
+/// `pcfg_band_count`, so a default would turn an unpublished equate into a write at the band count. The
+/// control for it then draws as unavailable, which is the true statement.
+fn resolved_offsets(c: &mut impl Caller, _h: &Hook) -> Vec<(&'static str, u32)> {
+    FIELDS
+        .iter()
+        .filter_map(|f| equate(c, &f.equate_name()).ok().map(|v| (f.key, v)))
+        .collect()
 }
 
 /// **A refusal, as one line**, saying whose refusal it is and carrying the server's own words.
@@ -1794,6 +2887,12 @@ mod tests {
         reads: Vec<(String, String)>,
         /// A symbol whose write is refused, and the refusal.
         refuse_write: Option<(&'static str, i64, &'static str)>,
+        /// ⚑ **The `Equate Table`'s own namespace, kept SEPARATE from `listing`** exactly as the bus keeps
+        /// it (§11.36 option A): an equate is a value, never an address, and folding the two here would let
+        /// a test pass on a door the real server does not have.
+        equates: Vec<(&'static str, u32)>,
+        /// How many whole frames `emulator/run_frames` was asked for, summed.
+        frames: u64,
     }
 
     impl Fake {
@@ -1803,6 +2902,8 @@ mod tests {
                 calls: Vec::new(),
                 reads: Vec::new(),
                 refuse_write: None,
+                equates: Vec::new(),
+                frames: 0,
             }
         }
 
@@ -1826,6 +2927,19 @@ mod tests {
                 ("BgAnim_Table", 0x02_8BD4, 0x0002_8BD4),
                 ("Debug_Lab_Index", 0xFF_EE0D, 0xFFFF_EE0D),
             ])
+        }
+
+        /// The equate rows the parallax scratch's layout is read out of. Values are the ones
+        /// `s4.debug.lst` actually publishes, so a transcribed offset and a resolved one are only equal
+        /// here because the listing says so.
+        fn with_equates(mut self, rows: Vec<(&'static str, u32)>) -> Self {
+            self.equates = rows;
+            self
+        }
+
+        fn without_equate(mut self, name: &str) -> Self {
+            self.equates.retain(|(n, _)| *n != name);
+            self
         }
 
         fn without(mut self, name: &str) -> Self {
@@ -1920,6 +3034,24 @@ mod tests {
                             "this fake serves no bytes at {key}"
                         ))),
                     }
+                }
+                // ⚑ Name only, and `-32013` with `data.missing` for an absent one — the two codes the
+                // contract test pins, so this fake cannot make a refusal shape up.
+                "emulator/lookup_equate" => {
+                    let name = params["name"].as_str().unwrap_or_default();
+                    match self.equates.iter().find(|(n, _)| *n == name) {
+                        Some((n, v)) => Ok(json!({"name": n, "value": v})),
+                        None => Err(Refusal {
+                            code: Some(-32013),
+                            reason: Some("equateNotPublished".to_string()),
+                            message: format!("this listing does not publish `{name}`"),
+                            remedy: None,
+                        }),
+                    }
+                }
+                "emulator/run_frames" => {
+                    self.frames += params["frames"].as_u64().unwrap_or(0);
+                    Ok(json!({"frames": params["frames"]}))
                 }
                 other => Err(Refusal::local(format!("this fake serves no {other}"))),
             }
@@ -3008,27 +4140,704 @@ mod tests {
         );
     }
 
-    /// ⚑ **The nudge control's reason names the blocker and the two fields it will have.**
+    // ---------------------------------------------------------------------------------------------
+    // ⚑ The nudge surface. Every fixture's numbers are MEASURED off the listings on this box, never
+    // chosen, so an assertion that passes here is an assertion about a real build.
+    // ---------------------------------------------------------------------------------------------
+
+    /// `s4.debug.lst`'s own rows, read 2026-09-19 from the build of 2026-09-18 19:26.
     ///
-    /// The line is what stands in for a control that cannot work yet, so it has to answer the two
-    /// questions a person asks: why is this off, and what will it do. A blank "coming soon" answers
-    /// neither.
+    /// ⚑ **`Parallax_Scratch_Config` is at `$FFFFEA46` here and [`SCRATCH_NOTED_ADDR`] says `$FFFFEA26`.**
+    /// That is not a typo in either place: the symbol sits at the RAM tail inside a size-varying
+    /// `@shape_divergent` group and has moved $20 since the note was written. The fixture carries the
+    /// listing's number, because the listing is what a machine runs with.
+    const S4_SCRATCH: u32 = 0xFFFF_EA46;
+    const S4_SCRATCH_END: u32 = 0xFFFF_EC64;
+
+    /// `demo.debug.lst`'s, read the same day. Its span is 190 bytes, so its band stride is **10** where
+    /// s4's is 32 — the measurement that rules out transcribing a stride.
+    const DEMO_SCRATCH: u32 = 0xFFFF_E550;
+    const DEMO_SCRATCH_END: u32 = 0xFFFF_E60E;
+
+    /// The equate rows `s4.debug.lst` publishes for the two structs, values included.
+    fn scratch_equates() -> Vec<(&'static str, u32)> {
+        vec![
+            ("parallax_config_len", 0x1E),
+            ("MAX_PARALLAX_BANDS", 0x10),
+            ("parallax_config_pcfg_band_count", 0x00),
+            ("parallax_config_pcfg_layer_mask", 0x02),
+            ("parallax_config_pcfg_deform_speed_fg", 0x09),
+            ("parallax_config_pcfg_deform_speed_bg", 0x0A),
+            ("parallax_config_pcfg_bob", 0x1D),
+            ("band_entry_band_factor_a_s1", 0x02),
+            ("band_entry_band_factor_a_s2", 0x03),
+            ("band_entry_band_factor_b_s1", 0x04),
+            ("band_entry_band_factor_b_s2", 0x05),
+            ("band_entry_band_factor_ops", 0x06),
+            ("band_entry_band_phase_offset", 0x09),
+        ]
+    }
+
+    /// A scratch buffer of `bands` records, with `pcfg_band_count` at offset 0 and every other byte a
+    /// distinct value, so a wrongly computed offset reads a number no other offset holds.
+    ///
+    /// ⚑ **Distinct bytes rather than a pattern, deliberately.** A buffer of zeroes or of one repeated
+    /// byte would let an offset that is wrong by any amount read the value the test expected, which is a
+    /// fixture that cannot fail.
+    fn scratch_bytes(bands: u8) -> String {
+        let len = 0x1E + 32 * bands as usize;
+        let mut hex = String::from("0x");
+        for i in 0..len {
+            let b = if i == 0 { bands } else { (i as u8) ^ 0x5A };
+            hex.push_str(&format!("{b:02X}"));
+        }
+        hex
+    }
+
+    /// The whole s4-shaped surface: the selector, the three scratch symbols, the proc, the equates, and a
+    /// machine whose scratch IS installed with `bands` bands and a cleared arm byte.
+    fn armed(bands: u8) -> Fake {
+        Fake::new(vec![
+            ("Parallax_Current_Config", 0xFF_88EC, 0xFFFF_88EC),
+            ("Parallax_Target_Config", 0xFF_88F0, 0xFFFF_88F0),
+            ("Parallax_Transition_Frames", 0xFF_88F4, 0xFFFF_88F4),
+            ("Parallax_Snap_Pending", 0xFF_88F5, 0xFFFF_88F5),
+            (
+                "Parallax_Scratch_Config",
+                S4_SCRATCH & 0x00FF_FFFF,
+                S4_SCRATCH,
+            ),
+            (
+                "Parallax_Scratch_Config_End",
+                S4_SCRATCH_END & 0x00FF_FFFF,
+                S4_SCRATCH_END,
+            ),
+            (
+                "Parallax_Scratch_Arm",
+                S4_SCRATCH_END & 0x00FF_FFFF,
+                S4_SCRATCH_END,
+            ),
+            ("Parallax_InstallScratch", 0x01_2345, 0x0001_2345),
+            ("Debug_Lab_Index", 0xFF_EE0D, 0xFFFF_EE0D),
+        ])
+        .with_equates(scratch_equates())
+        // installed: the selector holds the scratch's own raw address
+        .serving("Parallax_Current_Config", "0xFFFFEA46")
+        // the request byte, cleared by the engine as it serviced it
+        .serving("Parallax_Scratch_Arm", "0x00")
+        .serving("Parallax_Scratch_Config", &scratch_bytes(bands))
+    }
+
+    /// ⚑ **THE TRAP FROM §5.3, IN ITS SECOND INCARNATION: the proc's name ships in a release listing.**
+    ///
+    /// `NOTE` §6.6 measured it — `Parallax_InstallScratch` appears in the RELEASE listing with an address
+    /// (its body is DEBUG-gated, so the empty label collapses onto its neighbour's) while
+    /// `Parallax_Scratch_Config` and `Parallax_Scratch_Arm` do not. A gate keyed on the proc would offer
+    /// knobs on a release build and write into whatever occupies the buffer's old address, with no fault
+    /// to show for it: the bands-off trap exactly, one channel over.
+    ///
+    /// So this fixture is a **release** listing: the proc present, the two RAM symbols absent.
     #[test]
-    fn the_disabled_nudge_control_says_why_and_what_it_will_be() {
+    fn the_gate_ignores_the_proc_because_its_name_ships_in_a_release_listing() {
+        let mut f = armed(2).without(SCRATCH).without(SCRATCH_ARM);
+        let e = hook(&mut f).expect_err("a release listing must refuse, proc or no proc");
+        assert_eq!(e.reason.as_deref(), Some("noScratchInThisBuild"));
         assert!(
-            NUDGE_BLOCKED.contains("ROM"),
-            "it must say WHY: the factors live in ROM and cannot be edited in place"
+            !f.calls.iter().any(|(m, p)| m == "emulator/lookup_symbol"
+                && p["name"] == json!(SCRATCH_PROC)),
+            "the gate resolved `{SCRATCH_PROC}`, whose name is in a RELEASE listing. Resolving it at all \
+             is the defect, because whatever is done with the answer, the answer is yes on a build with \
+             no buffer: {:?}",
+            f.calls
+        );
+    }
+
+    /// ⚑ **THE DESTINATION IS RESOLVED FIRST**, which is what makes the proc's release visibility harmless
+    /// rather than dangerous — §5.3's own ordering, and the property `turn_off` already holds.
+    ///
+    /// The assertion is on the FIRST symbol lookup, not on the set of them: a gate that asked about the arm
+    /// cell first would refuse for the right reason half the time and, on a build carrying one and not the
+    /// other, name the wrong missing symbol in the remedy.
+    #[test]
+    fn the_destination_is_resolved_before_the_arm_cell() {
+        let mut f = armed(2).without(SCRATCH).without(SCRATCH_ARM);
+        let _ = hook(&mut f);
+        let first = f
+            .calls
+            .iter()
+            .find(|(m, _)| m == "emulator/lookup_symbol")
+            .map(|(_, p)| p["name"].as_str().unwrap_or_default().to_string());
+        assert_eq!(
+            first.as_deref(),
+            Some(SCRATCH),
+            "the first thing the gate asks the listing must be the DESTINATION: {:?}",
+            f.calls
+        );
+    }
+
+    /// ⚑ **TWO conditions, and a build with one of them is refused.**
+    ///
+    /// A name resolving is not storage existing, and one name resolving is not two. The two symbols are in
+    /// the same `if DEBUG == 1 @shape_divergent` block today, so this is a build that cannot exist by
+    /// construction — which is the point: the gate is two checks because the bands-off precedent proves
+    /// that reasoning from "they must go together" is how a panel comes to write a real address into a cell
+    /// that is not the destination.
+    #[test]
+    fn a_build_with_the_buffer_and_no_arm_cell_is_refused() {
+        let mut f = armed(2).without(SCRATCH_ARM);
+        let e = hook(&mut f).expect_err("the buffer alone is not the hook");
+        assert_eq!(e.reason.as_deref(), Some("noScratchInThisBuild"));
+    }
+
+    /// ⚑ **THE REFUSAL MUST READ AS *YOUR BUILD HAS NO SCRATCH*, NOT AS *THIS IS BROKEN*.**
+    ///
+    /// §5.3 paid for this wording once: the bands-off target landed at 16:48Z and the owner's window held a
+    /// 14:53Z listing, so a correct refusal looked like a broken feature. Here a third door is open that
+    /// was not open there — **a release ROM genuinely does not have this RAM** — so the line has to name
+    /// the shape, not only the staleness.
+    ///
+    /// Each assertion is a question a person asks on reading it, and the last two are the ones that keep it
+    /// from reading as a defect.
+    #[test]
+    fn the_no_scratch_refusal_names_the_shape_and_the_symbol_and_never_reads_as_broken() {
+        let r = no_scratch();
+        let m = r.message.clone();
+        for want in [SCRATCH, SCRATCH_ARM, SCRATCH_PROC, "RELEASE", "DEBUG"] {
+            assert!(m.contains(want), "the refusal must name {want:?}: {m}");
+        }
+        assert!(
+            m.contains("not a fault") || m.contains("This is not a fault"),
+            "it must say so in as many words, because the reader's first reading is that it is: {m}"
         );
         assert!(
-            NUDGE_BLOCKED.contains("driver") && NUDGE_BLOCKED.contains("rate shift"),
-            "NOTE section 2: only driver and rate_shift are meaningful, so the line must not promise \
-             the whole record"
+            m.contains("Selecting a scene still works"),
+            "it must say what DOES work here, or a person concludes the whole tab is dead: {m}"
         );
-        for barred in ["step mask", "col shift", "vram"] {
+        for barred in ["broken", "failed", "error"] {
             assert!(
-                !NUDGE_BLOCKED.to_lowercase().contains(barred),
-                "the line promises {barred:?}, which NOTE section 2 rules out as geometry derived from \
-                 the art"
+                !m.to_lowercase().contains(barred),
+                "the refusal uses the word {barred:?}, which is the reading it exists to prevent: {m}"
+            );
+        }
+        let remedy = r.remedy(None).unwrap_or_default();
+        assert!(
+            remedy.contains("debug") || remedy.contains("DEBUG") || remedy.contains("s4.debug"),
+            "the remedy must name the shape that HAS the buffer: {remedy}"
+        );
+        assert!(
+            remedy.contains(HOOK),
+            "and the commit, so a person with a debug build can tell a stale listing from a missing \
+             feature: {remedy}"
+        );
+    }
+
+    /// ⚑ **THE BAND STRIDE IS DERIVED, AND A TRANSCRIBED 32 WOULD HAVE BEEN WRONG ON demo.**
+    ///
+    /// Both spans are measured: `s4.debug` gives `$FFFFEC64 - $FFFFEA46` = 542 → (542-30)/16 = **32**, and
+    /// `demo.debug` gives `$FFFFE60E - $FFFFE550` = 190 → (190-30)/16 = **10**. `NOTE` §6.4 says 32 *"for
+    /// this game"* and this is what that clause costs a panel that reads past it.
+    ///
+    /// ⚑ The two arms differ in **one** thing — the span — and share everything else, so a green here is
+    /// about the derivation and not about two fixtures that happen to agree with themselves.
+    #[test]
+    fn the_band_stride_is_derived_from_the_span_and_is_32_on_s4_and_10_on_demo() {
+        let mut f = armed(2);
+        let h = hook(&mut f).expect("the s4-shaped listing");
+        assert_eq!(
+            (h.span, h.header_len, h.max_bands, h.stride),
+            (542, 30, 16, 32)
+        );
+
+        let mut g = armed(2)
+            .without(SCRATCH)
+            .without(SCRATCH_END)
+            .without(SCRATCH_ARM);
+        g.listing.push((
+            "Parallax_Scratch_Config",
+            DEMO_SCRATCH & 0x00FF_FFFF,
+            DEMO_SCRATCH,
+        ));
+        g.listing.push((
+            "Parallax_Scratch_Config_End",
+            DEMO_SCRATCH_END & 0x00FF_FFFF,
+            DEMO_SCRATCH_END,
+        ));
+        g.listing.push((
+            "Parallax_Scratch_Arm",
+            DEMO_SCRATCH_END & 0x00FF_FFFF,
+            DEMO_SCRATCH_END,
+        ));
+        let h = hook(&mut g).expect("the demo-shaped listing");
+        assert_eq!(
+            (h.span, h.stride),
+            (190, 10),
+            "demo's band record is 10 bytes, and a 32 written into this crate would address its band 1 \
+             inside its band 3"
+        );
+    }
+
+    /// ⚑ **A SPAN THAT DOES NOT FACTOR IS REFUSED, NEVER ROUNDED.**
+    ///
+    /// A rounded stride is worse than no stride: it is right for band 0 and wrong for every band after it,
+    /// forever, with no fault — writes land in the middle of fields. So a non-exact division means the
+    /// derivation's premise (one header, `MAX_PARALLAX_BANDS` equal records, nothing else in the span) does
+    /// not hold for this build, and that is a refusal with the four numbers in it.
+    #[test]
+    fn a_span_that_does_not_factor_is_refused_rather_than_rounded() {
+        let mut f = armed(2).without(SCRATCH_END).without(SCRATCH_ARM);
+        // One byte longer, so (543 - 30) = 513 does not divide by 16.
+        f.listing
+            .push(("Parallax_Scratch_Config_End", 0xFF_EC65, 0xFFFF_EC65));
+        f.listing
+            .push(("Parallax_Scratch_Arm", 0xFF_EC65, 0xFFFF_EC65));
+        let e = hook(&mut f).expect_err("543 - 30 = 513 does not divide by 16");
+        assert_eq!(e.reason.as_deref(), Some("scratchDoesNotFactor"));
+        for n in ["543", "30", "16"] {
+            assert!(
+                e.message.contains(n),
+                "the refusal must carry the arithmetic so a reader can check it: {n} missing from {}",
+                e.message
+            );
+        }
+    }
+
+    /// ⚑ **EVERY OFFERED FIELD'S OFFSET COMES OUT OF THE LISTING, NOT OUT OF THIS FILE.**
+    ///
+    /// The fixture publishes `band_entry_band_factor_a_s1` at **7**, which is not its real value (2). If
+    /// this module transcribed the offset, the write's `disp` would be `30 + 32*1 + 2 = 64`; resolving it
+    /// gives `30 + 32*1 + 7 = 69`. A green here is the write having gone where the LISTING said.
+    ///
+    /// ⚑ The value is deliberately one no other offered field holds, so a wrong lookup cannot land on it.
+    #[test]
+    fn every_offered_fields_offset_comes_from_an_equate_and_never_from_this_file() {
+        let mut f = armed(2).without_equate("band_entry_band_factor_a_s1");
+        f.equates.push(("band_entry_band_factor_a_s1", 7));
+        let field = FIELDS
+            .iter()
+            .find(|f| f.key == "factor_a_s1")
+            .expect("the field exists");
+        nudge(&mut f, field, 1, 3).expect("band 1 is inside a 2-band config");
+        assert_eq!(
+            f.writes(),
+            vec![(SCRATCH.to_string(), 69, 3, 1)],
+            "the write must land at header(30) + stride(32)*band(1) + THE LISTING'S OFFSET(7) = 69, not \
+             at the 64 a transcribed 2 would give"
+        );
+    }
+
+    /// ⚑ **A FIELD WHOSE EQUATE THIS LISTING DOES NOT PUBLISH IS REFUSED, NEVER DEFAULTED TO ZERO.**
+    ///
+    /// Offset 0 is `pcfg_band_count`. A defaulted zero would therefore not merely miss the field, it would
+    /// write the person's value into the band count — the one header byte whose wrong value makes the walk
+    /// read bytes the install never wrote.
+    #[test]
+    fn a_field_whose_offset_equate_is_absent_is_refused_and_not_written_at_zero() {
+        let mut f = armed(2).without_equate("parallax_config_pcfg_layer_mask");
+        let field = FIELDS
+            .iter()
+            .find(|f| f.key == "layer_mask")
+            .expect("the field exists");
+        let e =
+            nudge(&mut f, field, 0, 0x00F0).expect_err("an unpublished equate is not an offset");
+        assert_eq!(
+            e.code,
+            Some(-32013),
+            "the server's own code is carried up: {e:?}"
+        );
+        assert!(
+            f.writes().is_empty(),
+            "nothing may be written: {:?}",
+            f.writes()
+        );
+    }
+
+    /// ⚑ **THE INSTALL COMPARE IS MASKED ON BOTH SIDES**, which is correct for every spelling combination
+    /// rather than for the pair that happened to be measured.
+    ///
+    /// `NOTE` §6.2 warns it explicitly — *"Mask before comparing; a raw compare is a false mismatch, and it
+    /// was the first thing this lane's own probe got wrong"* — because `Parallax_Current_Config` stores the
+    /// full sign-extended long while a listing may resolve the symbol to the 24-bit bus address.
+    ///
+    /// ⚑ **The question is the SPACE of values, not the values seen.** There are four combinations of
+    /// spelling across the two sides; masking is right in all four and a raw compare is right in one, so
+    /// both arms here are drawn from the space rather than from a measurement.
+    #[test]
+    fn the_install_compare_masks_both_sides_so_either_listing_spelling_matches() {
+        for (current, scratch, what) in [
+            (0xFFFF_EA46u32, 0xFFFF_EA46u32, "both raw"),
+            (
+                0xFFFF_EA46,
+                0x00FF_EA46,
+                "raw cell against a 24-bit listing",
+            ),
+            (
+                0x00FF_EA46,
+                0xFFFF_EA46,
+                "24-bit cell against a raw listing",
+            ),
+            (0x00FF_EA46, 0x00FF_EA46, "both 24-bit"),
+        ] {
+            assert!(
+                Installed {
+                    current,
+                    scratch,
+                    arm: 0
+                }
+                .took(),
+                "{what}: {current:#010X} and {scratch:#010X} are the same location and must compare equal"
+            );
+        }
+        assert!(
+            !Installed {
+                current: 0x0001_2F08,
+                scratch: 0xFFFF_EA46,
+                arm: 0
+            }
+            .took(),
+            "a ROM config is not the scratch, and masking must not make it one"
+        );
+    }
+
+    /// ⚑ **THREE STATES OUT OF TWO FACTS, AND NO INVENTED STATUS BYTE.**
+    ///
+    /// `NOTE` §6.2 is explicit that the arm cell is a **request** byte — the engine clears it as it services
+    /// it, whether the install took or was refused — so it cannot answer *did it work*. The compare answers
+    /// that. The arm byte is read for one job only: separating *the engine refused* from *the engine never
+    /// looked*, which the compare alone renders identical and which send a person to entirely different
+    /// places.
+    ///
+    /// The `never serviced` arm is not hypothetical: `HOOK`'s own banner names `games/demo`, where
+    /// `Parallax_Update` has no caller at all, and says the arm cell stays set for ever there and *"reads
+    /// like a dirty refusal and is nothing of the kind"*.
+    #[test]
+    fn the_three_install_states_are_told_apart_by_the_arm_byte_and_named_differently() {
+        let took = Installed {
+            current: 0xFFFF_EA46,
+            scratch: 0xFFFF_EA46,
+            arm: 0,
+        };
+        let refused = Installed {
+            current: 0x0001_2F08,
+            scratch: 0xFFFF_EA46,
+            arm: 0,
+        };
+        let unserviced = Installed {
+            current: 0x0001_2F08,
+            scratch: 0xFFFF_EA46,
+            arm: 1,
+        };
+        assert!(took.took() && !refused.took() && !unserviced.took());
+        assert!(
+            took.line().contains("IS the current config"),
+            "{}",
+            took.line()
+        );
+        assert!(
+            refused.line().contains("REFUSED") && refused.line().contains("pcfg_band_count"),
+            "a serviced refusal must name what the engine refuses FOR, which is the only actionable part: \
+             {}",
+            refused.line()
+        );
+        assert!(
+            unserviced.line().contains("NEVER SERVICED")
+                && unserviced.line().contains("not a refusal"),
+            "an unserviced arm must not read as a refusal — HOOK's banner says exactly that it does and \
+             is not: {}",
+            unserviced.line()
+        );
+        assert_ne!(
+            refused.line(),
+            unserviced.line(),
+            "two states that send a person to different places must not share a sentence"
+        );
+    }
+
+    /// ⚑ **A WRITE INTO A SCRATCH THE ENGINE IS NOT READING IS THE SILENT NO-OP THIS MODULE EXISTS
+    /// AGAINST**, and it is refused with nothing written.
+    ///
+    /// It is not an exotic state. `NOTE` §6.6's consequence 1: **crossing a section boundary EVICTS the
+    /// scratch**, because `Parallax_CheckBoundary` installs the new section's own ROM preset exactly as it
+    /// always did. So a person who armed, walked right, and turned a knob would otherwise watch nothing
+    /// happen — which is `NOTE` §0's whole subject.
+    #[test]
+    fn a_nudge_into_a_scratch_that_is_not_the_current_config_writes_nothing() {
+        let mut f = armed(2);
+        // The boundary crossing: the selector now holds the new section's ROM preset.
+        f.reads.retain(|(k, _)| k != "Parallax_Current_Config");
+        f.reads
+            .push(("Parallax_Current_Config".into(), "0x00012F08".into()));
+        let field = FIELDS.iter().find(|f| f.key == "factor_a_s1").unwrap();
+        let e = nudge(&mut f, field, 0, 3).expect_err("an evicted scratch is not editable");
+        assert_eq!(e.reason.as_deref(), Some("scratchNotInstalled"));
+        assert!(
+            f.writes().is_empty(),
+            "nothing may be written: {:?}",
+            f.writes()
+        );
+        let remedy = e.remedy(None).unwrap_or_default();
+        assert!(
+            remedy.contains("boundary") && remedy.contains("again"),
+            "the remedy must name the ordinary cause and the fix, or the refusal reads as a defect: \
+             {remedy}"
+        );
+    }
+
+    /// ⚑ **THE BAND BOUND IS THE INSTALLED COUNT, NOT THE RESERVATION**, and the difference is bytes the
+    /// install never wrote.
+    ///
+    /// `Parallax_InstallScratch` copies *"the header plus this config's OWN bands, not the ceiling"*, so a
+    /// band between `pcfg_band_count` and `MAX_PARALLAX_BANDS` is inside the buffer and outside the scene:
+    /// a write there edits uninitialised RAM that nothing reads. Bounding on `max_bands` would accept it.
+    #[test]
+    fn a_band_at_or_above_the_installed_count_is_refused_and_not_clamped() {
+        let mut f = armed(2);
+        let field = FIELDS.iter().find(|f| f.key == "factor_a_s1").unwrap();
+        // 2 is inside MAX_PARALLAX_BANDS (16) and outside this config's count (2).
+        let e = nudge(&mut f, field, 2, 3).expect_err("band 2 of a 2-band config does not exist");
+        assert_eq!(e.reason.as_deref(), Some("bandOutsideConfig"));
+        assert!(
+            e.message.contains("2") && e.message.contains("16"),
+            "the refusal must name BOTH numbers, or a reader cannot see that they differ: {}",
+            e.message
+        );
+        assert!(
+            f.writes().is_empty(),
+            "nothing may be written: {:?}",
+            f.writes()
+        );
+        // …and the band below it is accepted, so the bound is a bound and not a blanket refusal.
+        let mut g = armed(2);
+        nudge(&mut g, field, 1, 3).expect("band 1 of a 2-band config exists");
+        assert_eq!(g.writes().len(), 1);
+    }
+
+    /// ⚑ **A VALUE OUTSIDE A FIELD'S COHERENT RANGE IS REFUSED, NOT CLIPPED.**
+    ///
+    /// The door accepts every byte and the engine reads whatever is there, so clipping would silently
+    /// substitute a number the person did not ask for and the readback would then agree with the
+    /// substitution. `factor_ops`'s bits 2-7 are unread: 4 is not a louder 3, it is 0 with a bit nobody
+    /// looks at.
+    #[test]
+    fn a_value_outside_the_fields_coherent_range_is_refused_rather_than_clipped() {
+        let mut f = armed(2);
+        let field = FIELDS.iter().find(|f| f.key == "factor_ops").unwrap();
+        let e = nudge(&mut f, field, 0, 4).expect_err("ops is 0..=3");
+        assert_eq!(e.reason.as_deref(), Some("valueOutsideRange"));
+        assert!(
+            f.writes().is_empty(),
+            "nothing may be written: {:?}",
+            f.writes()
+        );
+        // The shift fields' 15 IS in range, because it is a documented sentinel rather than an overflow.
+        let mut g = armed(2);
+        let shift = FIELDS.iter().find(|f| f.key == "factor_a_s1").unwrap();
+        nudge(&mut g, shift, 0, 15).expect("15 is the locked sentinel, not out of range");
+        assert_eq!(g.writes(), vec![(SCRATCH.to_string(), 32, 15, 1)]);
+    }
+
+    /// ⚑ **THE CURSOR GUARD COVERS A SCRATCH WRITE TOO.**
+    ///
+    /// [`forbidden`] exists because writing `Debug_Lab_Index` moves a label and changes nothing that runs.
+    /// A nudge is a write like any other and is passed through the same guard **on its resolved
+    /// destination**, so a build whose scratch plus offset lands on the cursor is refused. The guard would
+    /// otherwise cover only the channels, which is the half of the surface it was written for.
+    #[test]
+    fn the_lab_index_guard_fires_on_a_scratch_write_that_resolves_to_the_cursor() {
+        let mut f = armed(2);
+        // A listing whose scratch sits so that band 0's `factor_a_s1` (header 30 + 2) is the cursor.
+        // ⚑ The END mark moves with it, so the SPAN is unchanged: a fixture that moved only the base
+        // would be refused by the factoring check and would report a green on the wrong guard.
+        let base = LAB_INDEX_ADDR - 32;
+        let end = base + 542;
+        f.listing
+            .retain(|(n, _, _)| *n != SCRATCH && *n != SCRATCH_END && *n != SCRATCH_ARM);
+        f.listing.push((SCRATCH, base & 0x00FF_FFFF, base));
+        f.listing.push((SCRATCH_END, end & 0x00FF_FFFF, end));
+        f.listing.push((SCRATCH_ARM, end & 0x00FF_FFFF, end));
+        f.reads.retain(|(k, _)| k != "Parallax_Current_Config");
+        f.reads
+            .push(("Parallax_Current_Config".into(), format!("0x{base:08X}")));
+        let field = FIELDS.iter().find(|f| f.key == "factor_a_s1").unwrap();
+        let e = nudge(&mut f, field, 0, 3).expect_err("the cursor is never a nudge destination");
+        assert_eq!(e.reason.as_deref(), Some("labIndexIsNotASelector"));
+        assert!(
+            f.writes().is_empty(),
+            "nothing may be written: {:?}",
+            f.writes()
+        );
+    }
+
+    /// ⚑ **THE ARM IS A POKE PLUS ONE FRAME, AND EXACTLY ONE.**
+    ///
+    /// `NOTE` §6.2: an Aether client *"can write a byte and run a frame and cannot force a `jsr`"*, and one
+    /// frame is enough rather than two because `Parallax_Update` polls the arm **at its head, ahead of its
+    /// own config select** — so the install lands on that frame. A panel that ran two would be right by
+    /// accident and would have stepped the game past what the person was looking at; one that ran none
+    /// would read the ROM pointer back and report the hook as dead.
+    #[test]
+    fn arming_writes_the_request_byte_and_runs_exactly_one_frame() {
+        let mut f = armed(2);
+        let (_h, state) = arm(&mut f).expect("the s4-shaped listing is armable");
+        assert_eq!(
+            f.writes(),
+            vec![(SCRATCH_ARM.to_string(), 0, 1, 1)],
+            "one write, one byte, nonzero, into the request cell and nothing else"
+        );
+        assert_eq!(f.frames, 1, "exactly one frame");
+        assert!(state.took(), "{}", state.line());
+        // The order matters as much as the count: a frame run BEFORE the poke services nothing.
+        let poke = f
+            .calls
+            .iter()
+            .position(|(m, _)| m == "emulator/write_memory")
+            .expect("the poke happened");
+        let frame = f
+            .calls
+            .iter()
+            .position(|(m, _)| m == "emulator/run_frames")
+            .expect("the frame happened");
+        assert!(
+            poke < frame,
+            "the request byte must be written BEFORE the frame: {:?}",
+            f.calls
+        );
+    }
+
+    /// ⚑ **THE SCRATCH READ STOPS AT THE INSTALLED BAND COUNT, NOT AT THE RESERVATION.**
+    ///
+    /// The install copies this config's own bands, so the bytes past them were never written. Reading the
+    /// whole 542 and showing them as field values would be the panel presenting uninitialised RAM as a
+    /// scene's numbers — a readout that lies, which is the one thing this surface may not do.
+    #[test]
+    fn the_scratch_read_stops_at_the_installed_band_count() {
+        let mut f = armed(2);
+        let h = hook(&mut f).expect("the listing");
+        let s = read_scratch(&mut f, &h).expect("the scratch reads back");
+        assert_eq!(s.band_count, 2);
+        assert_eq!(
+            s.raw.len(),
+            30 + 32 * 2,
+            "header plus TWO records, not header plus sixteen"
+        );
+        let lens: Vec<u64> = f
+            .calls
+            .iter()
+            .filter(|(m, p)| m == "emulator/read_memory" && p["symbol"] == json!(SCRATCH))
+            .map(|(_, p)| p["len"].as_u64().unwrap_or(0))
+            .collect();
+        assert!(
+            lens.iter().all(|l| *l <= 94),
+            "no read may ask for more than the install wrote: {lens:?}"
+        );
+    }
+
+    /// ⚑ **THE NOTE'S ADDRESS IS A WITNESS AND THE LISTING HAS ALREADY MOVED PAST IT.**
+    ///
+    /// This is the measurement that decides the parcel's shape, so it is a row rather than a comment.
+    /// [`Channel::drift`] REFUSES when a listing and the note disagree about a selector's address, and
+    /// copying that discipline here would have been the obvious thing — and would refuse the whole feature
+    /// on a healthy build: `Parallax_Scratch_Config` is at the RAM tail inside a size-varying
+    /// `@shape_divergent` group and has already moved $20 since `NOTE` §6.1 recorded it.
+    ///
+    /// So the gate is: the note's number and the listing's differ, **and the hook still works**.
+    #[test]
+    fn the_noted_scratch_address_is_a_witness_and_a_listing_that_has_moved_past_it_still_works() {
+        assert_ne!(
+            SCRATCH_NOTED_ADDR, S4_SCRATCH,
+            "if these ever agree this row has stopped measuring anything and must be re-derived from the \
+             listing rather than deleted"
+        );
+        let mut f = armed(2);
+        let h = hook(&mut f).expect(
+            "a listing whose scratch has moved since the note is a HEALTHY listing, not a drifted one",
+        );
+        assert_eq!(h.scratch_raw, S4_SCRATCH);
+    }
+
+    /// ⚑ **THE STALE FORECAST, CORRECTED WHERE A READER LOOKS FOR IT.**
+    ///
+    /// The switchboard design's §5.2 promised, by name, that the nudge control would be *"two numbers,
+    /// `driver` and `rate shift`"* when the hook landed. **The hook that landed reaches a different
+    /// struct.** Those two are BgAnim band-record fields and this is the parallax config's RAM copy.
+    ///
+    /// The refusal reason matters as much as the refusal: `driver` is **not** geometry — it is perfectly
+    /// nudgeable in principle — so recording it under the geometry reason would be filing a correct
+    /// conclusion under a wrong premise, and the next lane to ask would be told the wrong thing.
+    #[test]
+    fn the_refused_list_names_driver_and_rate_shift_as_the_wrong_channel_and_not_as_geometry() {
+        for want in ["driver", "rate_shift"] {
+            let row = NOT_OFFERED
+                .iter()
+                .find(|n| n.field == want)
+                .unwrap_or_else(|| {
+                    panic!("{want} must be listed, or its absence reads as an oversight")
+                });
+            assert_eq!(
+                row.class, "wrong channel",
+                "{want} is not geometry and not inert: it is a field of a struct this hook does not reach"
+            );
+            assert!(
+                row.why.contains("ROM"),
+                "the reason must say WHY it cannot be reached — the table it lives in is ROM: {}",
+                row.why
+            );
+        }
+        assert!(
+            NOT_OFFERED
+                .iter()
+                .any(|n| n.field.contains("step_mask") && n.class == "geometry"),
+            "and the two that ARE geometry must still be filed as geometry"
+        );
+        assert!(
+            !FIELDS.iter().any(|f| f.key.contains("driver")
+                || f.key.contains("rate_shift")
+                || f.key.contains("step_mask")),
+            "none of them may be offered"
+        );
+    }
+
+    /// ⚑ **NOTHING OFFERED IS A FIELD THE NOTE CALLS INERT OR COUPLED.**
+    ///
+    /// `NOTE` §6.5's three-way division is the whole reason [`FIELDS`] is short: an **inert** field is a
+    /// slider that does nothing, which §0 exists to prevent, and a **coupled** field produces a picture
+    /// whose parts disagree, which is subtler and worse. The check runs over the equate names rather than
+    /// the labels, because the equate name is what the write actually resolves.
+    #[test]
+    fn no_offered_field_is_one_the_note_calls_inert_or_coupled() {
+        // Straight from `NOTE` 6.3/6.5, spelled as the engine spells them.
+        for barred in [
+            "pcfg_v_factor_fg",
+            "pcfg_v_factor_bg",
+            "pcfg_v_center_y",
+            "pcfg_v_offset",
+            "pcfg_transition",
+            "pcfg_band_count",
+            "band_top_plane",
+            "brm_hshift",
+            "bc_step",
+            "bc_rem",
+            "bc_span",
+            "bc_pad",
+        ] {
+            assert!(
+                !FIELDS.iter().any(|f| f.equate == barred),
+                "{barred} is offered, and NOTE 6.5 puts it in the inert or coupled class"
+            );
+            assert!(
+                NOT_OFFERED.iter().any(|n| n.field.contains(barred)),
+                "{barred} is neither offered nor explained, so its absence reads as an oversight"
+            );
+        }
+        // And every offered field must actually resolve in a real listing's equate namespace, or the
+        // control draws permanently unavailable and nobody finds out why.
+        let published: Vec<&str> = scratch_equates().into_iter().map(|(n, _)| n).collect();
+        for f in FIELDS {
+            assert!(
+                published.contains(&f.equate_name().as_str()),
+                "`{}` is offered but s4.debug.lst publishes no `{}` — the offsets are the listing's, so a \
+                 field whose equate is not published can never be written",
+                f.label,
+                f.equate_name()
             );
         }
     }
