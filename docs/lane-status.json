@@ -1,6 +1,12 @@
 {
-  "focus": "Answered the hub's readiness pass: their option list was missing one, and one cost was unpriced.",
-  "inFlight": [],
+  "focus": "Making the window stop saying 'there is no window' in the instant before it draws its first frame.",
+  "inFlight": [
+    {
+      "what": "Removing the startup state where a window that exists reports that it does not",
+      "where": "branch parcel/first-present-order",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: nine landings, main green, nothing running, boot read at 48 KB of 100 KB.",
+  "nextBoundary": "When the first-present parcel returns and is verified here.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -25,11 +31,11 @@
     },
     {
       "id": "F-FIRST-PRESENT-REFUSAL",
-      "state": "blocked",
+      "state": "doing",
       "size": "S",
-      "blockedBy": "the hub's ruling, now unblocked at their end",
+      "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A window that exists but has not drawn yet reports 'there is no window'. I have answered the hub's readiness pass; they rule, then we build."
+      "title": "A window that exists but has not drawn yet reports 'there is no window'. The hub ruled; the half that removes the state rather than describing it is ours to build."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -104,7 +110,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; and that the raster and bands channels now select.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T09:37:52Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T09:39:47Z"
 }
