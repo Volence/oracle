@@ -19,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the nudge parcel returns and is verified here.",
+  "nextBoundary": "When the nudge parcel returns. The boot read is back under a third of its bound.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -112,5 +112,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-19T05:33:00Z"
+  "updatedAt": "2026-09-19T06:21:45Z"
 }
