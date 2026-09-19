@@ -280,11 +280,58 @@ alongside the `band_entry_*` rows, and a client could resolve the stride instead
 
 ## 5. Gates
 
-Every row is red-first: the mutation was written to disk, read back, the suite run, the failing guards
-recorded by name, and the file restored from the committed baseline. **A compile error is not a red** — each
-mutation below is a behaviour change that compiles.
+Nineteen mutations. Each was **written to disk and read back off disk** before its run (the harness asserts
+the new text is present and the old text is gone, and prints the region), the suite was run, the failing
+guards were recorded **by name**, and the file was restored with `git checkout` from the **committed**
+baseline. **A compile error is not a red** — every mutation below compiles and changes behaviour, and the
+harness flags a compile error separately so it can never be counted as one.
 
-*(Filled in by §5.1 below after the campaign; aggregates in §6.)*
+The parameter was varied deliberately rather than repeated: which symbol the gate resolves, the order it
+resolves them in, a dropped condition, a reworded refusal, a transcribed constant, a rounded division, a
+transcribed offset, a raw comparison, a collapsed state, a dropped precondition, a bound taken from the
+wrong number, a clip instead of a refusal, a dropped guard, a swapped call order, an over-long read, a
+misfiled reason, an offered inert field, and a defaulted zero.
+
+Baseline for M1–M17: `8d8e1bb`. For M18 and M19: `01498d6`.
+
+| # | mutation, quoted from disk | the guard that fired |
+|---|---|---|
+| M1 | `let scratch_raw = match resolve(c, SCRATCH_PROC) {` (was `SCRATCH`) | `the_gate_ignores_the_proc_because_its_name_ships_in_a_release_listing` (+12 others — a broad mutation; the named row failed on its own assertion, printing the two lookups the gate issued) |
+| M2 | the arm-cell block moved **above** the destination block | `the_destination_is_resolved_before_the_arm_cell` |
+| M3 | the `resolve(c, SCRATCH_ARM)` check replaced by `let _ = SCRATCH_ARM;` | `a_build_with_the_buffer_and_no_arm_cell_is_refused` |
+| M4 | the refusal reworded to *"numeric nudging failed: it is broken in this build"*, keeping every symbol name and phrase the row looks for | `the_no_scratch_refusal_names_the_shape_and_the_symbol_and_never_reads_as_broken` |
+| M5 | `stride: 32, // NOTE 6.4's figure, transcribed` | `the_band_stride_is_derived_from_the_span_and_is_32_on_s4_and_10_on_demo` |
+| M6 | the `% max_bands == 0` clause dropped from `coherent` | `a_span_that_does_not_factor_is_refused_rather_than_rounded` |
+| M7 | `equate(c, &field.equate_name())?` replaced by a `match field.key` of NOTE §6.3/§6.4's transcribed offsets | `every_offered_fields_offset_comes_from_an_equate_and_never_from_this_file`, `a_field_whose_offset_equate_is_absent_is_refused_and_not_written_at_zero` |
+| M8 | `self.current == self.scratch` (was both sides masked) | `the_install_compare_masks_both_sides_so_either_listing_spelling_matches` |
+| M9 | `if self.arm != 0 {` → `if false {` — the two failure states share one sentence | `the_three_install_states_are_told_apart_by_the_arm_byte_and_named_differently` |
+| M10 | `if !state.took() {` → `if false {` — writes into an evicted scratch | `a_nudge_into_a_scratch_that_is_not_the_current_config_writes_nothing` |
+| M11 | `band >= h.max_bands` (was `band >= s.band_count`) | `a_band_at_or_above_the_installed_count_is_refused_and_not_clamped` |
+| M12 | `let value = value.clamp(lo, hi);` and the refusal disabled | `a_value_outside_the_fields_coherent_range_is_refused_rather_than_clipped` |
+| M13 | the `forbidden(SCRATCH, …)` guard replaced by `let _ = &forbidden;` | `the_lab_index_guard_fires_on_a_scratch_write_that_resolves_to_the_cursor` |
+| M14 | `run_frames` moved **before** the request-byte poke | `arming_writes_the_request_byte_and_runs_exactly_one_frame` |
+| M15 | `let want = h.span as usize;` (was bounded by the installed band count) | `the_scratch_read_stops_at_the_installed_band_count` (+5 — the over-long read also breaks the fixture's served length) |
+| M16 | `driver`'s `class` changed from `"wrong channel"` to `"geometry"` | `the_refused_list_names_driver_and_rate_shift_as_the_wrong_channel_and_not_as_geometry` |
+| M17 | the `bob` field's equate changed to `pcfg_v_factor_fg` — an offered field with no runtime reader | `no_offered_field_is_one_the_note_calls_inert_or_coupled` |
+| M18 | `resolved_offsets` defaults an unpublished equate to `0` instead of dropping the field | ⚑ **GREEN on the first run.** See §5.1 |
+| M19 | the moved-address clause dropped from `shape_line` | `the_shape_line_names_the_notes_address_when_the_listing_has_moved_past_it` |
+
+### 5.1 ⚑ M18 READ GREEN, AND IT IS THE MOST USEFUL ROW HERE
+
+`resolved_offsets` was changed from *drop a field whose offset equate the listing does not publish* to
+*default it to zero*, and **the suite did not notice.** The reason is worth writing down because it
+generalises: the existing row covered the **write** path (`nudge` resolves the equate itself and refuses
+with the server's own `-32013`), and **nothing covered the draw path**, which reads its offsets out of
+`Nudging::offsets`. Two paths, one of them gated, and the gated one's refusal was *hiding* the other.
+
+The consequence is not cosmetic. **Offset 0 is `pcfg_band_count`**, so a defaulted zero makes the control
+for an unpublished field **display the band count as that field's value** — a readout that lies, on the one
+surface whose entire thesis is that it does not, with a correct refusal on the write ensuring nobody ever
+found out.
+
+Two gates were added (`01498d6`) and M18 and M19 were then re-run against that commit: both red, each on its
+own guard. **This is the retroactive tightening the method requires** — the campaign's method was
+*mutate the decision*, and M18 showed a decision can live in two places with only one of them measured.
 
 ---
 
