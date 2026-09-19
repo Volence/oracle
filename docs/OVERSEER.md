@@ -440,3 +440,41 @@ Every landing narrative, CI-read note and superseded `NEXT:` filed under this ru
 **NEXT: `DATA-DISPLAY-AUDIT`** *(corrected 2026-09-19: `LIVE-EFFECTS-NUDGES` is DISPATCHED, branch `parcel/live-effects-nudges`; CI on the fix was read green, run `1235148`, all three jobs)*. Its premise was re-derived before dispatch and aeon's hook is LANDED in engine source at `origin/master` (`Parallax_InstallScratch`, `Parallax_Scratch_Arm`, `Parallax_Scratch_Config`), so §5.2's *"GENUINELY BLOCKED"* is stale; the live constraint is that the scratch RAM is **debug-only** (`if DEBUG == 1 @shape_divergent` in aeon's `engine/ram.emp`), so the control must refuse honestly on a release build. The previous clause read: It is a declared `LIVE-EFFECTS` project with aeon, so
 **whatever it establishes about WHICH fields have a runtime reader is owed to aeon and aurora in the same turn**, not discovered by them later.
 **CI READ GREEN for the fix at `1235148`** — read to completion with `gh run view`, all three jobs green (*Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*). **Main is green; the red this seat opened is closed.**
+
+**`LIVE-EFFECTS-NUDGES` LANDED 2026-09-19, merge `0a591d7`** (agent tip `7fa9cc6`, seven commits; player only — nothing under
+`crates/oracle-core/src/`, `contract/`, or `PROVENANCE.md`). **The control the owner asked for by name works**: the parallax knobs the landed
+hook makes live, written into the RAM scratch with the install armed, under pause-write-resume.
+⚑ **MY PREMISE WAS WRONG AND IT SHAPED THE PARCEL — the forecast named the WRONG STRUCT.** I briefed *"two numbers, `driver` and `rate_shift`"*
+off §5.2's forecast. **Those are BgAnim BAND-RECORD fields; the hook that landed is the PARALLAX channel's, and a `parallax_config` has neither
+anywhere in it** — verified at this seat against aeon `origin/master`: `rate_shift` appears in `engine/effects/raster*.emp` and
+`engine/level/bg_anim.emp` and **never in `engine/level/parallax.emp`**, whose only mention is a comment pointing at *"BgAnim band driver's"* arm.
+aeon's own §6.5 says it from the other side: *"the answer is **not** the same one."* **So a forecast about one struct's fields was made from the
+other struct's note, and it survived into my brief because I re-derived the HOOK's existence and not the FIELDS' identity.** The right answer is
+**ten** free knobs, not two, and `driver`/`rate_shift` are filed as **wrong channel, not geometry**. §5.2 corrected where it stands.
+▶ **Two further findings that changed the design, both of the class this repo keeps meeting:** (a) **the scratch ADDRESS in the note has already
+moved** — `NOTE` §6.1 says `$FFFFEA26`, the 09-18 listing says **`$FFFFEA46`** — and because it is a RAM-tail symbol in a size-varying group, a
+drift-style refusal would **refuse the feature on a healthy build**, so the panel *states* the disagreement and refuses nothing on it; (b) **the
+band stride is PER GAME** (32 on `s4.debug`, **10** on `demo.debug`), so a transcribed 32 would have addressed demo's band 1 **inside its band 3**
+— every offset is now resolved per gesture from published equates through `emulator/lookup_equate` (already served and vendored, **no CR**), with
+the stride *derived* as `(span − parallax_config_len) / MAX_PARALLAX_BANDS` and a **non-exact division refusing rather than rounding.**
+▶ **The gate is destination-first and NEVER resolves `Parallax_InstallScratch` at all** — the second instance of the `BgAnim_Table_Empty` trap,
+because that proc **appears in a release listing with an address** (its body is DEBUG-gated and an empty label collapses onto its neighbour's)
+while the RAM does not. **"Did the install take"** is `Parallax_Current_Config == Parallax_Scratch_Config` masked to 24 bits — the fact itself,
+not a report of it — with the arm byte read only to separate *serviced and refused* from *never serviced*. **No invented status byte.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, DEBUG PROFILE:** fmt 0, clippy `-D warnings` 0 (outside a pipe), **91/91 legs by both counts, 3046
+passed / 0 failed / 10 ignored**, end marker reached past the 75-leg point where a reap truncated an earlier run tonight; currency suites 2/3/9/5
+with no golden in the diff. **Red-first reproduced INDEPENDENTLY by restoring the trap** — gate keyed on the release-visible proc, destination no
+longer refusing, shown on disk before the run and restored from committed `0a591d7`: **46 passed / 2 failed, and both guards NAME the property** —
+`the_destination_is_resolved_before_the_arm_cell` and `the_gate_ignores_the_proc_because_its_name_ships_in_a_release_listing`.
+⚑ **The agent's own method correction, which is this lane's invariant 9 arriving through someone else's work: TWO of its twenty mutations read
+GREEN first.** M18's write-path refusal *hid* a draw-path defect (offset 0 is `pcfg_band_count`, so the control would have **displayed the band
+count as the field's value**); M20's assertion **could not fail**, because every digit it matched on also occurs as a prose literal in the sentence
+under test. Both gated and re-run. **A green mutation is a finding about the gate, not about the code.**
+▶ **NEEDS HIS EYES, and it is the honest limit of the parcel:** no runtime confirmation exists. Everything is checked against a fake bus whose
+numbers are read out of the two real listings, and **the claim is *"turn this number and the parallax changes"*, which no fixture can see.**
+aeon's `tools/parallax_scratch_probe.py` drove the engine half; the panel's half is unproven on a machine. Two of the three install states are
+argued from aeon's source, which calls its own refusal arm *"DEFENSIVE AND UNEXERCISED"* — stated on the sentences themselves.
+▶ **AN OPEN AEON ASK, reported rather than requested:** `NOTE` §2's `driver`/`rate_shift` are **unreachable by anything** — an act's
+`BgAnim_Table` is ROM and **no RAM copy exists in any build shape** — so closing it is this hook's own two-part shape one struct over
+(`BgAnim_Scratch_Table` + `BgAnim_InstallScratch`). A much smaller ask would retire the derivation above: **publish a `band_record_len` equate.**
+**NEXT: `DATA-DISPLAY-AUDIT`** (items for his eyes plus `objects.rs`'s latent raw-JSON catch-all).
