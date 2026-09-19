@@ -59,6 +59,10 @@ scraping it *"needs a glyph table"*. It decodes as ordinary ASCII at font base `
 from the commit per the duration bar above, not from feel) **and pointed every reader at the one artifact
 nobody needed to build.** A deferral carries its justification, and a justification is exactly the kind of
 sentence that is never re-measured — only a probe finds this, and only if someone distrusts the reason.
+⚑ **OPERATIONAL FORM, from the hub (empyrean `97d50035`), and it is what makes the bar usable: a row saying
+"blocked" invites a question; a row saying "blocked BECAUSE X" answers it in advance. So when a row has sat,
+RE-DERIVE THE *BECAUSE*, NOT THE *BLOCKED*.** The `blocked` half is what a reader doubts and re-checks; the
+`because` is what buys it passage, and nothing ever revisits it.
 
 **⚑ A DURATION IS A MEASUREMENT, AND "FOR THIRTEEN MONTHS" WAS WRITTEN FROM FEEL** *(2026-09-19, found by an
 agent against this seat's own prose from the night before)*. `POSTHOC-CARRY` wrote, in two places, that a
