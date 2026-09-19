@@ -19,7 +19,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the V-counter parcel returns and is verified here.",
+  "nextBoundary": "When the V-counter parcel returns and is verified here. Last landing's CI is read and green.",
   "queue": [
     {
       "id": "TESTROM-VCOUNTER-MENU",
@@ -136,5 +136,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-19T00:42:05Z"
+  "updatedAt": "2026-09-19T00:56:52Z"
 }
