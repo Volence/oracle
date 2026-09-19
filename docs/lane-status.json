@@ -38,6 +38,14 @@
       "title": "The opcode-size ROM's picture keeps changing out to 1800 frames and no button moves it, so what we pinned is a snapshot of something still moving. Is it its design, or is our machine not finishing it?"
     },
     {
+      "id": "F-TIMED-PIN-UNSETTLED",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "Three test-ROM pictures we pin were still moving when we pinned them. For two that is fine -- they are animations -- but none of the three says so, so a reader takes them for finished pictures."
+    },
+    {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
       "state": "open",
       "size": "S",
@@ -128,5 +136,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-19T00:38:33Z"
+  "updatedAt": "2026-09-19T00:42:05Z"
 }
