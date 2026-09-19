@@ -1,6 +1,12 @@
 {
-  "focus": "The sprite ROM's never-run mode passes nine for nine; the confusing button was the cartridge's mistake.",
-  "inFlight": [],
+  "focus": "Two ROMs we could not read: one turns out readable and menu-driven, the other never settles.",
+  "inFlight": [
+    {
+      "what": "Driving the V-counter ROM's menu so it prints verdicts we can read, instead of pinning a picture",
+      "where": "branch parcel/vcounter-menu",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,15 +19,23 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: landed and pushed, nothing running. Only CI on the landing SHA is still being read.",
+  "nextBoundary": "When the V-counter parcel returns and is verified here.",
   "queue": [
     {
-      "id": "TESTROM-UNSCRAPED-PAIR",
+      "id": "TESTROM-VCOUNTER-MENU",
+      "state": "doing",
+      "size": "M",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "The V-counter ROM is readable after all -- the note saying it needed a font table was wrong. It is a menu of nine display modes; drive it and it prints verdicts we can pin."
+    },
+    {
+      "id": "TESTROM-OPCODE-SIZES-NEVER-SETTLES",
       "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Two ROMs print their results in a font we cannot read, so we only pin their picture. Until they are read, 'all the tests pass' is not something we can honestly say. Likely two parcels wearing one row."
+      "title": "The opcode-size ROM's picture keeps changing out to 1800 frames and no button moves it, so what we pinned is a snapshot of something still moving. Is it its design, or is our machine not finishing it?"
     },
     {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
@@ -112,7 +126,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking; next is the pair of ROMs whose results we still cannot read. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T00:36:29Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T00:38:33Z"
 }
