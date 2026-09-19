@@ -48,6 +48,9 @@ THE CLASSIFICATION VOCABULARY, and only the first two count as coverage
 * `DIFFERS`  — `land.sh` runs something RELATED that does **not** subsume it. This is the class that
                caused all three measured instances: release-vs-debug reads as coverage and is not.
                A `DIFFERS` row is a GAP and is printed in the landing report as one.
+* `CONDITIONAL` — `land.sh` runs this same command, but a flag can skip it. It counts as coverage
+               only on a run that took it, so `--gaps-only --ran <gates>` is how a report says
+               which way this one went. The report must never state it statically.
 * `ABSENT`   — no local equivalent at all, with the reason.
 * `SETUP`    — a runner-environment step that is not a gate (checkout, toolchain install, apt, cache).
                Named rather than filtered silently, because "it is only setup" is a judgement and the
@@ -71,6 +74,15 @@ above, in the other direction.
 `uses:` steps are keyed the same way and matched against `KNOWN_ACTIONS` rather than pinned by
 digest, because their body is a version tag we do not control. An unrecognised action reddens.
 
+⚑ **AND THE CLAIM IN THE OTHER DIRECTION IS CHECKED TOO, because otherwise this file is itself the
+copy it exists to prevent.** A `RUN` or `CONDITIONAL` row asserts *`land.sh` runs this*. Nothing
+made that true: someone could drop `-D warnings` from `land.sh`'s clippy gate and this map would go
+on saying `RUN`, which is instance 2 of the measured defect pointed the other way and committed
+inside the instrument built to catch it. So each such row carries `local` — the exact text that must
+appear in `tools/land.sh` — and it is searched **outside comment lines only**, because this file's
+sibling quotes every one of these commands in its header and a comment must not be able to satisfy
+a proof obligation.
+
 SCOPE: WHICH WORKFLOWS A LANDING CAN AFFECT
 ===========================================
 
@@ -84,7 +96,8 @@ USAGE
 
     tools/ci-parity.py                 # the gaps, and the exit status (0 = the map is current)
     tools/ci-parity.py --report        # the full table, every step and its classification
-    tools/ci-parity.py --gaps-only     # just the DIFFERS/ABSENT lines, for a report footer
+    tools/ci-parity.py --gaps-only     # just the gap lines, for a report footer
+    tools/ci-parity.py --gaps-only --ran D5   # ... treating D5's CONDITIONAL row as covered
 
 Exit 0 when every in-scope step is classified and unchanged; 1 otherwise. **Exit 0 does NOT mean
 `land.sh` runs what CI runs** — it means the difference is written down. Read the gaps.
@@ -93,6 +106,7 @@ Exit 0 when every in-scope step is classified and unchanged; 1 otherwise. **Exit
 import argparse
 import hashlib
 import os
+import re
 import sys
 
 try:
@@ -130,6 +144,7 @@ MAP = {
         sha="45d764df8b06",
         kind="RUN",
         gate="G0b",
+        local="./tools/rust-floor.sh",
         note="land.sh runs ./tools/rust-floor.sh and refuses on an empty or failing read, which is "
         "the same failure this step has (`v=$(...)` under `bash -e`). Before 2026-09-19 nothing "
         "local ran it, so a broken floor declaration was a CI-only red.",
@@ -138,12 +153,14 @@ MAP = {
         sha="8196c8670dd2",
         kind="RUN",
         gate="D3",
+        local="cargo test -p oracle-core --test determinism_gate --test proptests -- --nocapture",
         note="byte-identical command, debug profile, --nocapture. It is CI's most-guarded job "
         "(everything else `needs:` it), and it was the one CI job with no local counterpart at all.",
     ),
     # ---- build-test-lint ----------------------------------------------------------------------
     "ci.yml:build-test-lint/Read the declared Rust floor": dict(
-        sha="45d764df8b06", kind="RUN", gate="G0b", note="same step, same script; see above."
+        sha="45d764df8b06", kind="RUN", gate="G0b", local="./tools/rust-floor.sh",
+        note="same step, same script; see above."
     ),
     "ci.yml:build-test-lint/System libraries for the frontend/player build (alsa, udev)": dict(
         sha="331636b04a87",
@@ -158,6 +175,7 @@ MAP = {
         sha="810e75f0d3de",
         kind="RUN",
         gate="G4",
+        local="cargo fmt --all --check",
         note="`cargo fmt --all -- --check` vs land.sh's `cargo fmt --all --check`; cargo forwards "
         "both spellings to the same rustfmt invocation. Profile-independent.",
     ),
@@ -165,6 +183,7 @@ MAP = {
         sha="192f29c22f65",
         kind="RUN",
         gate="D1",
+        local="cargo clippy --all-targets -- -D warnings",
         note="DEBUG clippy, `--all-targets -- -D warnings`. land.sh's G5 is the RELEASE variant and "
         "is NOT the same lint set: `cfg(debug_assertions)` code is compiled in one and out of the "
         "other, so a lint inside a debug-only block is invisible to G5. D1 runs CI's exact command "
@@ -184,6 +203,7 @@ MAP = {
         sha="7960477d461a",
         kind="RUN",
         gate="G1b",
+        local="./tools/verify-vendor.sh",
         note="`./tools/verify-vendor.sh`, the same script, one code path. Until 2026-09-19 G1 only "
         "checked that the vendor directories were non-empty, which cannot see a truncated or "
         "wrong-pin corpus — and a worktree that symlinks a sibling's vendor/ inherits whatever that "
@@ -204,14 +224,16 @@ MAP = {
         sha="6667c60ed428",
         kind="RUN",
         gate="D2",
+        local="./tools/ci-corpus-guards.sh",
         note="`./tools/ci-corpus-guards.sh`, the same script. land.sh's G1 printed a note TELLING the "
         "reader they could run it and never ran it — the shape this whole parcel is about. It needs "
         "CI=1, which land.sh exports at G1. Measured: 7 s.",
     ),
     "ci.yml:build-test-lint/Test": dict(
         sha="ec4556a17852",
-        kind="DIFFERS",
+        kind="CONDITIONAL",
         gate="D5",
+        local="cargo test --workspace 2>&1",
         note="**THE MEASURED GAP.** `cargo test --workspace` in DEBUG. land.sh's G7 is the same "
         "selection in RELEASE, and release does not subsume debug in either direction: debug "
         "compiles `debug_assertions` code (which is how run 35418036061 went red on a landing that "
@@ -221,7 +243,8 @@ MAP = {
     ),
     # ---- replay-playthroughs --------------------------------------------------------------------
     "ci.yml:replay-playthroughs/Read the declared Rust floor": dict(
-        sha="45d764df8b06", kind="RUN", gate="G0b", note="same step, same script; see above."
+        sha="45d764df8b06", kind="RUN", gate="G0b", local="./tools/rust-floor.sh",
+        note="same step, same script; see above."
     ),
     "ci.yml:replay-playthroughs/Full replay playthroughs against the frozen pin": dict(
         sha="d161683ffc55",
@@ -266,6 +289,51 @@ def load_workflows(root):
 
 def digest(body):
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+
+
+_LAND_CODE = None
+
+
+# Lines that DISPLAY text rather than run it. Both of these were measured to defeat the check
+# before they were stripped: land.sh's header quotes every command it runs, at length, and each
+# gate also `echo`s its own command as a banner. **A quotation must not be able to discharge a
+# proof that the command is RUN** — the first draft of this check passed a land.sh whose clippy
+# gate had lost `-D warnings`, because the banner one line above still said the words. That is the
+# exact defect this file exists to catch, committed inside the catcher, and it was found by
+# mutating land.sh rather than by reading the filter.
+_DISPLAY = re.compile(r"^\s*(hr;\s*)?(echo|printf|note|pass|fail|command\s+echo)\b")
+
+
+def _land_code(root):
+    """tools/land.sh with comment and display lines removed.
+
+    ⚑ This is a FILTER OVER TEXT, not a parse of shell. It cannot tell a command inside a dead
+    `if false` branch from a live one, and a command spelled across a line continuation will not
+    match. Both failures are in the safe direction — a false RED that a human resolves by looking —
+    and neither is silent. What it does buy is that the `RUN` claim cannot be discharged by prose.
+    """
+    global _LAND_CODE
+    if _LAND_CODE is None:
+        try:
+            with open(os.path.join(root, "tools", "land.sh"), encoding="utf-8") as fh:
+                _LAND_CODE = "\n".join(
+                    l
+                    for l in fh.read().splitlines()
+                    if not l.lstrip().startswith("#") and not _DISPLAY.match(l)
+                )
+        except OSError:
+            _LAND_CODE = ""
+    return _LAND_CODE
+
+
+def _local_missing(root, entry):
+    """The text a RUN/CONDITIONAL row promises land.sh contains, if it is absent."""
+    if entry["kind"] not in ("RUN", "CONDITIONAL"):
+        return None
+    want = entry.get("local")
+    if not want:
+        return "<no `local` declared, so the RUN claim is unprovable>"
+    return None if want in _land_code(root) else want
 
 
 def audit(root):
@@ -320,6 +388,17 @@ def audit(root):
                             "words and the sha in the same edit."
                         )
                         continue
+                    missing = _local_missing(root, entry)
+                    if missing:
+                        findings.append(
+                            f"MAP CLAIMS MORE THAN land.sh DOES for {key!r}: it is classified "
+                            f"{entry['kind']} at gate {entry.get('gate')}, but {missing!r} does not "
+                            "appear on any non-comment line of tools/land.sh. Either the gate was "
+                            "changed and the map was not, or the classification was wrong when it "
+                            "was written. A map that asserts coverage it cannot see is the copy "
+                            "this file exists to prevent."
+                        )
+                        continue
                     rows.append((key, entry["kind"], entry.get("gate"), entry["note"]))
                 else:
                     uses = st.get("uses")
@@ -344,20 +423,36 @@ def audit(root):
     return rows, findings
 
 
-ORDER = {"DIFFERS": 0, "ABSENT": 1, "RUN": 2, "STRONGER": 3, "SETUP": 4, "OUT-OF-SCOPE": 5}
+ORDER = {"DIFFERS": 0, "CONDITIONAL": 1, "ABSENT": 2, "RUN": 3, "STRONGER": 4, "SETUP": 5,
+         "OUT-OF-SCOPE": 6}
 
 
 def main():
     ap = argparse.ArgumentParser(description="CI-step coverage map for tools/land.sh")
     ap.add_argument("--root", default=None, help="repo root (default: this script's parent)")
     ap.add_argument("--report", action="store_true", help="print every step, not only the gaps")
-    ap.add_argument("--gaps-only", action="store_true", help="print only DIFFERS/ABSENT lines")
+    ap.add_argument("--gaps-only", action="store_true", help="print only the gap lines")
+    ap.add_argument(
+        "--ran",
+        default="",
+        metavar="GATES",
+        help="comma-separated gate ids that DID run on this landing; a CONDITIONAL row whose gate "
+        "is named here is covered and is left out of the gap list. Without it every CONDITIONAL "
+        "row counts as a gap, which is the safe direction: a report may understate its coverage "
+        "and must never overstate it.",
+    )
     args = ap.parse_args()
+    ran = {g.strip() for g in args.ran.split(",") if g.strip()}
 
     root = args.root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     rows, findings = audit(root)
 
-    gaps = [r for r in rows if r[1] in ("DIFFERS", "ABSENT")]
+    gaps = [
+        r
+        for r in rows
+        if r[1] in ("DIFFERS", "ABSENT")
+        or (r[1] == "CONDITIONAL" and r[2] not in ran)
+    ]
 
     if not args.gaps_only:
         shown = rows if args.report else gaps
@@ -385,10 +480,15 @@ def main():
             print(f"  BAD   {f}")
         print(f"ci-parity: {len(findings)} finding(s) — the map is NOT current")
         return 1
-    print(
-        f"ci-parity: the map is current ({len(rows)} steps classified, {len(gaps)} named as gaps). "
-        "This says the difference is WRITTEN DOWN, not that there is none."
-    )
+    # `--gaps-only` is consumed verbatim by `land.sh` into its report footer and its VERDICT file,
+    # so it emits the gap lines and NOTHING else. A summary line appended there arrives in the
+    # VERDICT as a bogus `ci_gap=` row, which is a machine-read artifact claiming a gap that is not
+    # one — small, and exactly the class of untruth this parcel is about.
+    if not args.gaps_only:
+        print(
+            f"ci-parity: the map is current ({len(rows)} steps classified, {len(gaps)} named as "
+            "gaps). This says the difference is WRITTEN DOWN, not that there is none."
+        )
     return 0
 
 

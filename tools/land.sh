@@ -53,9 +53,18 @@
 #
 # **THE EXECUTION, and what it cost.** Measured on this workstation, warm tree, 2026-09-19:
 #
+#   ⚑ THE TIMINGS BELOW CARRY NO DECIMAL POINT AND THAT IS NOT A STYLE CHOICE. The first draft of
+#     this table wrote a fraction of a second, as a decimal, on the floor-reading row. The guard in
+#     `crates/oracle-core/tests/toolchain_floor.rs` scans live files for a version-shaped number
+#     within sixty characters of a toolchain keyword, and that row names the floor script, so it
+#     read the timing as a claimed compiler version and went red. **D5 caught it, on the very first
+#     end-to-end run of the arm this same commit adds** — and the release suite could not have,
+#     because D5 runs before G7. Keep the numbers here integral. (The same applies to any sentence
+#     ABOUT this, which is why this paragraph states no figure.)
+#
 #     gate  CI step                                            profile   measured
-#     G0    (the inventory itself)                             —         0.2 s    NEW
-#     G0b   ./tools/rust-floor.sh                              —         0.1 s    NEW
+#     G0    (the inventory itself)                             —         under 1 s  NEW
+#     G0b   ./tools/rust-floor.sh                              —         under 1 s  NEW
 #     G1b   ./tools/verify-vendor.sh                           —         2 s      NEW
 #     D1    cargo clippy --all-targets -- -D warnings          debug     19 s     NEW
 #     D2    ./tools/ci-corpus-guards.sh                        debug     7 s      NEW
@@ -63,7 +72,7 @@
 #             --test proptests -- --nocapture                  debug     31 s     NEW
 #     D4    (the debug leg count, derived; its build is D5's)  debug     in D5    NEW
 #     D5    cargo test --workspace                             debug     731 s    NEW
-#     D6    (D5's ran-to-the-end)                              —         0 s      NEW
+#     D6    (D5's ran-to-the-end)                              —         under 1 s  NEW
 #
 #   `D1` to `D6` are **the debug arm** — one block, named for what distinguishes it, executed
 #   straight after G5 rather than woven into the release numbering. They are the gates CI runs and
@@ -150,7 +159,7 @@
 #   G0  CI parity inventory  [CI]  every `run:` step of every push-triggered workflow must be
 #                                  classified in `tools/ci-parity.py`. An added, edited or removed
 #                                  CI step reddens here, so this command cannot drift away from CI
-#                                  in silence. 0.2 s.
+#                                  in silence. Under a second.
 #   G0b declared Rust floor  [CI]  `./tools/rust-floor.sh`, the same script all three CI jobs run to
 #                                  pick their toolchain. It exits 1 on an unreadable floor, which on
 #                                  a runner fails the step; nothing local ran it, so a broken floor
@@ -398,6 +407,12 @@ FAILURES=()
 # both read it, and `set -u` turns an early refusal into an unbound-variable crash otherwise.
 FAST=0
 CI_GAPS=""
+# ⚑ How far the debug arm ACTUALLY got: 0 none, 1 D1-D3, 2 D1-D6. Set where the gates run, never
+#   inferred from `$DO_DEBUG_SUITE` -- a refusal at G0, G1 or G2b happens BEFORE D1 exists, and a
+#   VERDICT that read the flag would there record `debug_arm=D1-D6 ran` for a run that reached no
+#   D gate at all. (Found by reading the refusal path of this very change; it is the same defect
+#   the change exists to remove, one artifact smaller.)
+DEBUG_ARM=0
 D_LEGS_HEADER=""
 D_EXPECTED_LEGS=""
 D_PASS=""
@@ -418,14 +433,16 @@ note() { echo "        $*"; }
 # machine-read end marker that records only what passed reproduces, in a smaller artifact, exactly
 # the belief this parcel removes: that a green names its coverage.
 write_verdict_ci_parity() {
-    if [ "$FAST" = 1 ]; then
-        echo "debug_arm=skipped (fast path: lane bookkeeping only)"
-    elif [ "$DO_DEBUG_SUITE" = 0 ]; then
-        echo "debug_arm=D1-D3 ran; D4-D6 SKIPPED (--no-debug-suite): cargo test --workspace in DEBUG, which is the Test step of CI, did NOT run"
-    else
-        echo "debug_arm=D1-D6 ran, in the profile CI uses"
-    fi
-    printf '%s\n' "$CI_GAPS" | while IFS= read -r l; do
+    case "$DEBUG_ARM" in
+        2) echo "debug_arm=D1-D6 ran, in the profile CI uses" ;;
+        1) echo "debug_arm=D1-D3 ran; D4-D6 did NOT: cargo test --workspace in DEBUG, which is the Test step of CI, was not run$([ "$DO_DEBUG_SUITE" = 0 ] && echo ' (--no-debug-suite)')" ;;
+        *) echo "debug_arm=NONE ran$([ "$FAST" = 1 ] && echo ' (fast path: lane bookkeeping only)' || echo ' (this run ended before the debug arm)')" ;;
+    esac
+    # Same per-run list as the report; see the note beside it. `$CI_GAPS` (captured at G0, before
+    # any D gate could have run) is deliberately NOT what goes in the marker.
+    local ran=""
+    [ "$DEBUG_ARM" = 2 ] && ran="D5"
+    ./tools/ci-parity.py --gaps-only --ran "$ran" 2>/dev/null | while IFS= read -r l; do
         [ -n "$l" ] && echo "ci_gap=$(printf '%s' "$l" | command sed -e 's/^ *//')"
     done
 }
@@ -508,8 +525,12 @@ else
 fi
 # Captured now so the summary can reprint it after twenty-five minutes of suite, when nobody is
 # going to scroll back for it.
+# The STATIC list, for the banner here: every gap plus every CONDITIONAL step, because at G0 no D
+# gate has run and nothing yet knows which way this landing will go. The report at the END
+# recomputes it with `--ran`, and THAT one is the per-run measurement. Kept separate on purpose —
+# this line is "what could be missing", the other is "what was".
 CI_GAPS="$(./tools/ci-parity.py --gaps-only 2>/dev/null)"
-note "CI steps this command does NOT run (the gate naming its own gaps):"
+note "CI steps this command may not run (statically; the report at the end measures this run):"
 printf '%s\n' "$CI_GAPS" | while IFS= read -r l; do [ -n "$l" ] && note "$l"; done
 
 # --------------------------------------------------------------------------------------------
@@ -555,7 +576,7 @@ if [ "$VENDOR_OK" = 0 ]; then
 fi
 note "CI=1 exported: the suite's six in-built vacuity guards are armed (six named guard tests, two"
 note "of which also keep their original inline skip-refusal), so a present-but-INCOMPLETE vendor"
-note "corpus reddens from inside too. They are RUN, by name, at G6c — see the note there about what"
+note "corpus reddens from inside too. They are RUN, by name, at D2 — see the note there about what"
 note "this line used to be."
 
 # --------------------------------------------------------------------------------------------
@@ -820,6 +841,7 @@ cargo test -p oracle-core --test determinism_gate --test proptests -- --nocaptur
 DET_STATUS=$?
 if [ "$DET_STATUS" -eq 0 ]; then
     pass "D3 determinism holds in debug ($(command grep -cE '^test result: ' "$RUN_DIR/determinism-debug.log") leg(s))"
+    DEBUG_ARM=1
 else
     fail "D3 the determinism gate is RED in debug (exit $DET_STATUS). On CI nothing else runs at all when this fails"
     command tail -40 "$RUN_DIR/determinism-debug.log"
@@ -909,6 +931,7 @@ else
 fi
 if [ "$D_FAIL" -eq 0 ]; then
     pass "D6 debug aggregate failures = 0"
+    DEBUG_ARM=2
 else
     fail "D6 $D_FAIL test failure(s) in the debug aggregate"
     command grep -E '^(failures:|    [a-z_].*::)' "$RUN_DIR/suite-debug.log" | command head -30
@@ -1111,11 +1134,19 @@ fi
 # --------------------------------------------------------------------------------------------
 hr
 echo "GATES CI RUNS THAT THIS LANDING DID NOT — read this before predicting CI:"
-printf '%s\n' "$CI_GAPS" | while IFS= read -r l; do [ -n "$l" ] && note "$l"; done
+# ⚑ RECOMPUTED HERE, not reused from G0. One CI step (`Test`) is CONDITIONAL: D5 runs it verbatim
+#   unless --no-debug-suite, so whether it belongs in this list is a fact about THIS RUN and not
+#   about the map. Passing `--ran` is what makes the list a measurement; a static list would either
+#   claim a gap that was covered or, far worse, omit one that was not. Without `--ran` every
+#   CONDITIONAL row counts as a gap, which is the safe direction.
+RAN_GATES=""
+[ "$DEBUG_ARM" = 2 ] && RAN_GATES="D5"
+printf '%s\n' "$(./tools/ci-parity.py --gaps-only --ran "$RAN_GATES" 2>/dev/null)" \
+    | while IFS= read -r l; do [ -n "$l" ] && note "$l"; done
 if [ "$FAST" = 1 ]; then
     note "FAST PATH: G4-G8 and the whole debug arm D1-D6 were skipped. This landing publishes only"
     note "  lane bookkeeping, and it measured none of the code CI will build."
-elif [ "$DO_DEBUG_SUITE" = 0 ]; then
+elif [ "$DEBUG_ARM" != 2 ]; then
     note "AND: D4-D6 were skipped (--no-debug-suite). 'cargo test --workspace' in DEBUG — CI's"
     note "  'Test' step, the one that went red on run 35418036061 after a green landing here — did"
     note "  NOT run. This landing makes no claim about whether CI will pass."

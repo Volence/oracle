@@ -86,12 +86,20 @@ written to satisfy them:
 | `queue` ≤ 20 rows | 14 revisions |
 | whole file ≤ 12 KB | 8 revisions |
 
-**231 of the 255 committed revisions carry at least one of these, and this tool passed every one of
-them.** (Measured by replaying all 255 blobs; `HEAD` at `f4022d6` is clean against all of them, which
-is why widening the gate does not block the next landing.) The counts are from that replay and are
-the argument for the widening: the dominant class is `open` + `blockedBy` at 175, exactly as the
-contract predicts — the two older forbidden pairs are one row each by construction while `open` is
-unbounded, so the defect accumulates there.
+**231 of the 255 committed revisions break at least one of these rules. The gate as it stood at
+`f4022d6` reddened on 37 of the same 255 — on none of these rules, and on 16 of them for a rule the
+contract does not have** (see `STATUS_KEYS`; that divergence is corrected in the same commit). The
+remaining 21 are a `size: "XS"` outside the vocabulary, which the old gate did catch. `HEAD` at
+`f4022d6` is clean under the widened gate, which is why widening it does not block the next landing.
+Re-derive all of this with `tools/test_lane_check.py --corpus`.
+
+⚑ **The "37" is here because the first draft of that corpus report PRINTED "the gate at f4022d6
+passed all 255" as a sentence rather than measuring it** — an unmeasured claim inside the tooling
+built to remove unmeasured claims. Measuring it is what surfaced the `STATUS_KEYS` divergence.
+
+The counts are the argument for the widening: the dominant class is `open` + `blockedBy` at 175,
+exactly as the contract predicts — the two older forbidden pairs are one row each by construction
+while `open` is unbounded, so the defect accumulates there.
 
 ⚑ **One item on the dispatching brief's list was already enforced and is left alone: a future
 `updatedAt`.** `parse_stamp` has flagged it since this file was written. Reported rather than
@@ -229,10 +237,26 @@ UNCHECKED_RULES = (
     ("`project` ids", "checked against the peer's contract/projects.json — reading a peer's tree on the landing path is what SUITE_PATHS forbids"),
 )
 
-# The status document's shape, stable across every revision that touched it.
+# The status document's shape. Eight keys appear; SIX are required and two are not, and the split
+# is the CONTRACT's rather than this file's.
+#
+# ⚑ THIS LIST USED TO REQUIRE ALL EIGHT, AND THAT WAS THE COPY OUTRUNNING ITS AUTHORITY. The
+#   contract's field table calls `atBoundary` *"Optional"*, and of `awaiting` it says: *"Omitting
+#   the field is a third answer, 'did not say', and is read differently from `null`."* A gate that
+#   required them made that third answer unsayable here -- and it is not hypothetical: **16 of this
+#   board's 255 committed revisions omit both** (2026-08-23T04:04Z through 2026-08-24T00:46Z), so
+#   the widened gate would have reddened on this lane's own history for obeying the contract.
+#
+#   Found by measuring a sentence before writing it. The first draft of this comment KEPT the
+#   strictness and justified it with "all 255 revisions carry both fields"; the count is 239. The
+#   rule this file states at the top -- *"On any disagreement the contract wins and this list is
+#   what changes"* -- then decides it, and what changed is the code and not the paragraph.
+#
+#   The two optional keys are still TYPE-checked when present (see `check_status`), and their
+#   absence draws no note: the contract's governing law for this document is that a validator
+#   demanding a field be filled will get it filled, and "did not say" is exactly the answer a nudge
+#   would destroy.
 STATUS_KEYS = (
-    "atBoundary",
-    "awaiting",
     "blockedOnOwner",
     "focus",
     "inFlight",
@@ -240,6 +264,10 @@ STATUS_KEYS = (
     "queue",
     "updatedAt",
 )
+
+# Present-or-absent is the lane's call; the contract says so of both. Listed rather than left
+# implicit so a reader can see that their omission from STATUS_KEYS is a decision.
+STATUS_KEYS_OPTIONAL = ("awaiting", "atBoundary")
 
 # What every log entry carries, derived from the corpus and not from taste.
 LOG_KEYS = ("at", "headline", "matters")

@@ -258,7 +258,11 @@ def corpus(decisions):
         if l.strip()
     ]
     tmp = tempfile.mkdtemp(prefix="lane-check-corpus-")
+    baseline = os.path.join(tmp, "lane-check-baseline.py")
+    with open(baseline, "w", encoding="utf-8") as fh:
+        fh.write(git("show", f"{BASELINE_REV}:tools/lane-check.py"))
     red = 0
+    base_red = 0
     total = 0
     for sha, when in revs:
         try:
@@ -272,8 +276,15 @@ def corpus(decisions):
         code, _ = run_tool(TOOL, p, decisions, sha[:12])
         if code:
             red += 1
+        # ⚑ The control is MEASURED here too. An earlier draft of this line printed "the gate at
+        #   f4022d6 passed all 255" as a sentence, which is an unmeasured claim inside the tool
+        #   built to remove unmeasured claims -- the same shape, one level in.
+        bcode, _ = run_tool(baseline, p, decisions, sha[:12])
+        if bcode:
+            base_red += 1
     print(f"corpus: {red} of {total} committed revisions of {STATUS} are RED under the widened "
-          f"gate ({total - red} clean). The gate at {BASELINE_REV[:7]} passed all {total}.")
+          f"gate ({total - red} clean).")
+    print(f"control: the gate at {BASELINE_REV[:7]} is RED on {base_red} of the same {total}.")
     return 0
 
 
