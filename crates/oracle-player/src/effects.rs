@@ -2163,8 +2163,12 @@ pub fn available(c: &mut impl Caller, channel: &Channel) -> Result<u32, Refusal>
 /// but subtracting the displacement is the spelling that cannot be confused with the 32-bit `rawAddr`,
 /// and it keeps this probe in the same 24-bit space [`resolve`] hands back.
 ///
-/// `None` is *the listing names nothing at or before this address*, which is an answer and not a
-/// failure: [`layout`] turns it into a stated limit rather than either a pass or a refusal.
+/// ⚑ **`None` means THE PROBE DID NOT ANSWER, and it is not *the listing names nothing there*.** The
+/// distinction is worth the sentence because the second reading is impossible: this is only ever called
+/// with an address at or past a symbol [`resolve`] just resolved, so a listing that answered the resolve
+/// always has something at or before it. What is left is a bus that failed the call or a reply with no
+/// `name` in it. [`layout`] turns that into a stated limit rather than a pass or a refusal: a transport
+/// hiccup must not refuse a healthy build, and must not read as a check that succeeded either.
 fn label_at(c: &mut impl Caller, addr24: u32) -> Option<(String, u32)> {
     let v = c
         .call(
@@ -2203,6 +2207,10 @@ fn label_at(c: &mut impl Caller, addr24: u32) -> Option<(String, u32)> {
 /// the finding it exists to catch.
 pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Refusal> {
     let mut said = Vec::new();
+    // ⚑ Cells whose probe did not answer. Counted rather than merely reported, because the account
+    // below would otherwise end "and it is" under a line saying a check did NOT run, which is the
+    // silent-pass shape this whole gate exists against.
+    let mut unmeasured = 0usize;
 
     // 1. Every cell stays inside the symbol it names.
     for cell in channel.writes {
@@ -2239,14 +2247,26 @@ pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Ref
                     )),
                 ));
             }
-            None => said.push(format!(
-                "⚠ `{}` + {span}: the loaded listing names nothing at or before {last:#010X}, so the \
-                 gate could not check that this cell stays inside its symbol and did NOT check it",
-                cell.symbol
-            )),
+            None => {
+                unmeasured += 1;
+                said.push(format!(
+                    "⚠ `{}` + {span}: the bus did not answer what the loaded listing puts at or before \
+                     {last:#010X}, so the gate could NOT check that this cell stays inside the symbol \
+                     it names, and did not. The write was not refused for it: a probe that failed to \
+                     answer is not evidence of a layout fault",
+                    cell.symbol
+                ));
+            }
         }
     }
-    if channel.writes.iter().all(|w| w.disp == 0) {
+    if unmeasured > 0 {
+        said.push(format!(
+            "⚠ layout: {unmeasured} of {} cells could not be placed in the loaded listing, so this \
+             account is INCOMPLETE. The cells that were placed are inside the symbols they name; \
+             nothing is claimed about the rest",
+            channel.writes.len(),
+        ));
+    } else if channel.writes.iter().all(|w| w.disp == 0) {
         said.push(format!(
             "layout: {} cell{} checked against the loaded listing, with no transcribed field offset \
              among them. Every one is a whole symbol at displacement 0, so the only layout fact this \
@@ -2299,6 +2319,9 @@ pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Ref
 
         // The extent, pinned rather than believed: (1) above proved nothing starts inside the covered
         // bytes; this proves something starts exactly one past them, so the array is not larger.
+        // ⚑ Whether the extent was actually pinned, so the partition line below cannot assert
+        // "exactly the N bytes this write-set poisons" on the strength of a probe that did not answer.
+        let mut pinned = true;
         match label_at(c, addr + covered) {
             Some((_, start)) if start != addr => {}
             Some((_, _)) => {
@@ -2323,12 +2346,16 @@ pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Ref
                     )),
                 ));
             }
-            None => said.push(format!(
-                "⚠ `{}`: the loaded listing names nothing at or before {:#010X}, so the gate could not \
-                 pin this array's extent and did NOT check that the write-set covers all of it",
-                cov.symbol,
-                addr + covered
-            )),
+            None => {
+                pinned = false;
+                said.push(format!(
+                    "⚠ `{}`: the bus did not answer what the loaded listing puts at or before \
+                     {:#010X}, so the gate could NOT pin this array's extent and did not check that \
+                     the write-set covers all of it",
+                    cov.symbol,
+                    addr + covered
+                ));
+            }
         }
 
         // The published count, which turns the byte figure into the figure the engine reasons in. A
@@ -2336,16 +2363,28 @@ pub fn layout(c: &mut impl Caller, channel: &Channel) -> Result<Vec<String>, Ref
         // from it, so an unmeasurable partition costs the gesture nothing but silence would cost the
         // reader the one number that says what the poison covers.
         match equate(c, cov.count_equate).ok() {
-            Some(n) if n > 0 && covered.is_multiple_of(n) => said.push(format!(
-                "layout: `{}` is exactly the {covered} bytes this write-set poisons, and the listing's \
-                 own `{}` = {n} partitions them into {n} {} slots of {} bytes each, so every {} the \
-                 build has is poisoned",
-                cov.symbol,
-                cov.count_equate,
-                cov.element,
-                covered / n,
-                cov.element,
-            )),
+            Some(n) if n > 0 && covered.is_multiple_of(n) => said.push(if pinned {
+                format!(
+                    "layout: `{}` is exactly the {covered} bytes this write-set poisons, and the \
+                     listing's own `{}` = {n} partitions them into {n} {} slots of {} bytes each, so \
+                     every {} the build has is poisoned",
+                    cov.symbol,
+                    cov.count_equate,
+                    cov.element,
+                    covered / n,
+                    cov.element,
+                )
+            } else {
+                format!(
+                    "⚠ this write-set poisons {covered} bytes of `{}` and the listing's own `{}` = {n} \
+                     divides them into {n} {} slots of {} bytes, but the array's extent went unpinned \
+                     above, so it is NOT established that {covered} bytes is all of it",
+                    cov.symbol,
+                    cov.count_equate,
+                    cov.element,
+                    covered / n,
+                )
+            }),
             Some(n) => said.push(format!(
                 "⚠ `{}` is exactly the {covered} bytes this write-set poisons, but the listing's `{}` = \
                  {n} does not divide them. The per-{} size could not be derived, so the gate checked \
@@ -3460,6 +3499,11 @@ mod tests {
         reads: Vec<(String, String)>,
         /// A symbol whose write is refused, and the refusal.
         refuse_write: Option<(&'static str, i64, &'static str)>,
+        /// ⚑ **A bus that will not answer the ADDRESS direction of `lookup_symbol`.** It exists so
+        /// [`label_at`]'s `None` arm is reachable at all: with a working bus it cannot be, because the
+        /// gate only ever probes at or past a symbol the same listing just resolved. A branch that no
+        /// fixture can reach is a branch nobody has read.
+        refuse_addr_lookup: bool,
         /// ⚑ **The `Equate Table`'s own namespace, kept SEPARATE from `listing`** exactly as the bus keeps
         /// it (§11.36 option A): an equate is a value, never an address, and folding the two here would let
         /// a test pass on a door the real server does not have.
@@ -3475,6 +3519,7 @@ mod tests {
                 calls: Vec::new(),
                 reads: Vec::new(),
                 refuse_write: None,
+                refuse_addr_lookup: false,
                 equates: Vec::new(),
                 frames: 0,
             }
@@ -3587,6 +3632,9 @@ mod tests {
             self.calls.push((method.to_string(), params.clone()));
             match method {
                 "emulator/lookup_symbol" => {
+                    if self.refuse_addr_lookup && params["addr"].is_string() {
+                        return Err(Refusal::local("the bus did not answer".to_string()));
+                    }
                     if let Some(q) = params["addr"].as_str() {
                         let want = u32::from_str_radix(q.trim_start_matches("0x"), 16).unwrap();
                         // Nearest preceding, as the bus answers the address direction.
@@ -4746,6 +4794,64 @@ mod tests {
                 .any(|l| l.starts_with('⚠') && l.contains("does not divide")),
             "{said:?}"
         );
+    }
+
+    /// ⚑ **A PROBE THAT DID NOT ANSWER IS SAID, AND THE ACCOUNT STOPS CLAIMING WHAT IT DID NOT CHECK.**
+    ///
+    /// The first cut of this gate pushed its affirmative summary unconditionally, so a run in which no
+    /// cell could be placed still ended *"and it is"* under a `⚠` line saying the check had not run.
+    /// That is the silent pass the whole parcel is about, produced inside the gate written against it,
+    /// and the method was tightened partway: the row is therefore retroactive rather than original.
+    ///
+    /// It also proves the arm is reachable. With a working bus it is not — the gate only probes at or
+    /// past a symbol the same listing just resolved, so something always precedes it — which is exactly
+    /// why the fixture needs a bus that refuses the address direction. A branch no fixture can reach is
+    /// a branch nobody has read.
+    #[test]
+    fn a_probe_that_did_not_answer_is_stated_and_the_account_stops_claiming_the_check() {
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            f.refuse_addr_lookup = true;
+            let said = layout(&mut f, &c).unwrap_or_else(|e| {
+                panic!(
+                    "{}: a bus that will not answer a probe is not evidence of a layout fault and \
+                     must not refuse the gesture: {}",
+                    c.key, e.message
+                )
+            });
+            assert_eq!(
+                said.iter().filter(|l| l.starts_with('⚠')).count(),
+                c.writes.len() + 1 + 2 * c.covers.len(),
+                "{}: every unplaced cell owes a line, plus the incomplete-account line, plus TWO per \
+                 array: the extent that went unpinned and the partition that cannot stand on it: \
+                 {said:?}",
+                c.key
+            );
+            assert!(
+                said.iter().any(|l| l.contains("account is INCOMPLETE")),
+                "{}: {said:?}",
+                c.key
+            );
+            // ⚑ And nothing may still assert the affirmative. This is the clause the first cut failed.
+            assert!(
+                !said.iter().any(|l| l.contains("and it is")),
+                "{}: the gate claimed the check it just said it could not run: {said:?}",
+                c.key
+            );
+        }
+        // The control: with the bus answering, the same fixture produces no warning at all, so the row
+        // above witnesses the refusing bus rather than a gate that always warns.
+        for c in CHANNELS {
+            let mut f = Fake::full();
+            assert!(
+                layout(&mut f, &c)
+                    .expect("answers")
+                    .iter()
+                    .all(|l| !l.starts_with('⚠')),
+                "{}",
+                c.key
+            );
+        }
     }
 
     /// ⚑ **WHAT EACH CHANNEL'S GATE ACTUALLY TESTS, STATED PER CHANNEL.**
