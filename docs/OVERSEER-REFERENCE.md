@@ -2532,3 +2532,26 @@ is offered as the thing to rule on, never as a reading of what was already ruled
 **Aurora's own exposure: NIL, and recorded as a DATED ABSENCE, not a standing fact** — measured 2026-09-18 at aurora
 master `ff54201b`, no `emulator/screen_text` call in `src/` and no method schema vendored; re-derive with
 `grep -rn "screen_text" src/ test/`. **It changes without anything touching that sentence.**
+
+## Moved from OVERSEER.md 2026-09-19 (the second recut, 85,360 -> 37,409 B) — live rules from the 09-17/09-18/09-19 narratives, each read at the moment its pointer names
+
+*Only the rules that were NOT already bars in this file moved here; the night's other lessons were banked as bars at the
+top of this file as they were found, and their narratives went to `docs/OVERSEER-LOG.md` instead. Each block below is
+verbatim from `OVERSEER.md`, with its original line range.*
+
+### `F-SLOT-REPROBE-ON-GESTURE`: read the empty diff before you read the result (orig lines 368-370)
+
+**`F-SLOT-REPROBE-ON-GESTURE` LANDED 2026-09-17, merge `ef2b06d`** (`L-17` built; land.sh GREEN, release 91/91 2993/0/5; debug 91/2990/0/8 here;
+M18 reproduced). ⚑ Ops, against this seat: my first reproduction's `sed` hit the wrong line, `git diff --stat` was EMPTY, and the run was
+green — discarded, redone on the right line, red. The empty diff is what showed it; read it before reading the result.
+
+### `PANEL-CLIP-MARK`: a cut sweep is structurally blind to a run collapsed to its mark, and what `d-54` still holds (orig lines 404-411)
+
+**PANEL-CLIP-MARK LANDED 2026-09-17, merge `67d9bc4`** (agent tip `7733f4f`; land.sh GREEN, release 91/91 3020/0/7; debug 91/3017/0/10 and R1
+reproduced here). The hub's split: the missing mark is ENGINEERING (§11.29's own standard — a lossy render that does not announce itself), the
+layout is HIS (card `d-54` filed). ⚑ **It was 91 unmarked cut runs over 28 arrangements, not the one line reported — the harvest landed hours
+earlier is what could count them**, and 67 remain, all whole-widget/table overflow, held under a ceiling. ⚑ **The gate found two defects in its
+own treatment**: a DOUBLE hover (egui's `Label` already hovers when elided; `table_cell` has carried the duplicate since it was written), and a
+`Grid` truncate RATCHET collapsing a column to a bare `…` — **which a cut sweep is structurally blind to, because a collapsed run fits its clip**,
+so the gate also refuses a run drawn as nothing but the mark. **NEXT: weigh `F-BANKED-ADDR-AMBIGUITY` (undemanded CR) against `LIVE-EFFECTS-NUDGES`
+and `F-Z80-ACCESSES-UNWATCHED`; d-54 and aurora's CR-W review are owed but gate nothing.**

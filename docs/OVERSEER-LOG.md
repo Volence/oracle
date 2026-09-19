@@ -3689,3 +3689,77 @@ the sweeps). ⚑ Per **`L-16`**, §4's line numbers and P10 charges are dead let
 `tools/land.sh` GREEN and pushed: release 90/90 legs, 2983/0/5). Go: the hub, citing his 2026-09-02 words at empyrean `b010db4a`
 (verified an ancestor of their `origin/main`) — a decision-free next item is taken, not parked. Verified here on the merged tree:
 debug 90 legs 2980/0/8 (+14 = the diff's fourteen `#[test]`s), debug clippy 0, red-first reproduced with the mutation on disk.
+
+## Moved from OVERSEER.md 2026-09-19 — closed landings, dispatch records, CI-read notes and superseded `NEXT:` clauses, verbatim (the second recut, 85,360 -> 37,409 B)
+
+*Nobody boots from this file.* The live rules these narratives contained are in `docs/OVERSEER-REFERENCE.md` under the
+section of the same date; where a rule's sentence could not be lifted at a line boundary it is **quoted verbatim there**,
+naming this file as its narrative. Subsections are in the boot file's original order.
+
+### The 2026-09-17 sequence: `OVERSEER-RECUT`, `DATA-DISPLAY-AUDIT` 9+11, the CR-W arc to its ruling, and their superseded `NEXT:` clauses (orig lines 339-367)
+
+**NEXT: `OVERSEER-RECUT`** (this file grew; move review bars to the reference), then `DATA-DISPLAY-AUDIT` items 9-11 (Screen
+strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**OVERSEER-RECUT LANDED 2026-09-17, merge `345f385`** (docs only: 69,869 → 26,914 B; lessons and holds to `docs/OVERSEER-REFERENCE.md`, closed history to `docs/OVERSEER-LOG.md`, both under "Moved from OVERSEER.md 2026-09-17"). **NEXT: `DATA-DISPLAY-AUDIT` items 9-11** (Screen strip, Objects look call, the sweeps). Re-derive each from the TREE per `L-16`.
+**DATA-DISPLAY-AUDIT items 9 + 11 DISPATCHED 2026-09-17** (branch `parcel/data-display-4`, worktree `../oracle-dd4`, base `b0d569e`);
+item 10 (Objects) is a look call for him, not a build. **Successor, named in the same write: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`.**
+**DATA-DISPLAY-AUDIT items 9 + 11 LANDED 2026-09-17, merge `07352f1`** (agent tip `5a572b2`; `tools/land.sh` GREEN, release 91/91 legs
+2992/0/5; debug 91/2989/0/8 and a red-first reproduced here). The slot re-read timing was the parcel's BLOCKED sub-item: **ruled `L-17`
+(re-probe on gesture)**, booked `F-SLOT-REPROBE-ON-GESTURE`. What remains of the audit is the owner's eyes (look calls 1-33) plus
+`objects.rs`'s latent raw-JSON catch-all (not covered by `L-15`). **NEXT: `F-PANELS-INVISIBLE-TO-SCREEN-TEXT`** — re-derive its premise
+from the tree first, and check whether it needs a contract change (a hub CR) before dispatching.
+**`F-PANELS-INVISIBLE-TO-SCREEN-TEXT` STARTED 2026-09-17 as a CR DRAFT, not a build** — premise re-derived: `screen_text`'s `kind` is a closed
+enum in the contract (§11.29; §11.47 rules runs inside a kind are not a CR), so panel text is a contract change. Docs-only agent on
+`parcel/cr-panel-text` (worktree `../oracle-crpanel`, base `349298d`) drafting `docs/proposed/2026-09-17-cr-*-panel-screen-text.md`; the hub
+rules it. **Successor, named in the same write: `F-SLOT-REPROBE-ON-GESTURE`** (ruled `L-17`, no decision needed).
+**`F-SLOT-REPROBE-ON-GESTURE` DISPATCHED 2026-09-17 in parallel** (branch `parcel/slot-reprobe`, worktree `../oracle-slots`, base `793b50d`; the
+CR draft beside it is docs-only, so no build contention). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W FILED 2026-09-17, merge `fb1c042`** (docs only: `docs/proposed/2026-09-17-cr-w-panel-screen-text.md` + vectors). Recommends one `panel`
+kind named by its tab, harvested from egui's PAINTED output (one hook for every panel) rather than ~212 ad-hoc label sites; reverses
+`screen.rs`'s module-doc refusal and answers it (§1.1). Sent to the hub for ruling; `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` is blocked on it. Its
+Q3 (a short build spike proving each tab's text is harvestable from the paint list) is the first build step once ruled. Q6 (reading a hidden
+tab) is his only if the hub wants it pursued.
+**CR-W RULED BY THE HUB 2026-09-17, VERIFIED at empyrean `629bf21f`** (an ancestor of their `origin/main`; `docs/OVERSEER-LOG.md` entry `2026-09-17T09:59:40Z — CR-W RULED`). Hub's own work, not under delegation.
+Q1 **option (a) ADOPTED IN SHAPE** (new `panel` kind, REQUIRED `panel` key; (d1)/(d2) ruled out: the kind is where a client learns how to
+read `text`). §3's CR boundary ADOPTED (palette-as-`palette`, `F-PLAYER-SCREENTEXT-CLIP`, paint-list harvest are oracle's, no CR).
+**GATE: no contract text or schema lands until the Q3 SPIKE passes** (per-tab text contiguous in `ui.layer_id()`'s paint list read before
+`end_pass`, else the `output_hook` + clip-rect route). Pass: §11.50 + §6 + schema land IN LOCKSTEP with the implementation and re-vendor.
+**Fail in both forms: the ruling REOPENS; do not build a different seam under it.** Q7 TAB/LF fold ADOPTED; R1 DROPPED; §8 item 31 ADOPTED;
+Q4 nothing now (booked `F-PANEL-SCROLL-UNSTATED`); Q5 booked `F-SCREEN-TEXT-TRANSIENT-AREAS`; Q2 and Q6 are HIS (Q6 out of scope).
+**Reviewer: aurora** — name it when the spike result returns. **NEXT after the slot parcel: the CR-W Q3 SPIKE** (not shipping).
+
+### CR-W from the Q3 spike to merge `106b659`, the session-28 boundary, and the superseded `NEXT:` clauses between them (orig lines 371-403)
+
+**CR-W Q3 SPIKE DISPATCHED 2026-09-17** (branch `parcel/crw-spike`, worktree `../oracle-spike`, base `ef2b06d`; test code + a findings doc only,
+nothing wired to the wire or contract). Pass → implementing parcel in lockstep with the hub's contract text; name aurora as reviewer. Fail in
+both forms → back to the hub, no substitute seam. **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`** — re-derive before dispatch.
+**CR-W Q3 SPIKE LANDED 2026-09-17, merge `5a51da1`: PASS IN FORM 1** (agent tip `5b21d11`; test-only; land.sh GREEN; M5 reproduced here).
+In-pass paint-list span in `TabViewer::ui`, read after `build_ui` and before the pass ends, is exact for all eleven tabs in every arrangement
+measured. **Form 2 FAILS** (a floating window over a body leaks 28 foreign runs), so it is not a fallback. Eight corrections to CR-W §2/§5/§10
+and the W-rows are in `docs/2026-09-17-cr-w-q3-spike.md` (spans reset per PASS; read each span from its own layer; floating windows are drawn
+bodies; `Context::graphics` takes the write lock). Reported to the hub with aurora named reviewer.
+**NEXT: the CR-W implementing parcel, in lockstep with the hub's §11.50 + schema** — compose the brief from the CR §10 AND the spike doc's
+corrections, never the CR alone.
+**CR-W IMPLEMENTING PARCEL DISPATCHED 2026-09-17** (branch `parcel/crw-panel`, worktree `../oracle-crw`, base `774b4ba`), composed from CR §5/§6/§9/§10
+AND the spike's corrections. Schema re-vendor is the LAST step and BLOCKED until the hub sends the SHA carrying §11.50 + schema (vendored bytes are
+pinned by `PROVENANCE.md`, so no hand patch). **Successor, same write: `F-BANKED-ADDR-AMBIGUITY`.**
+**CR-W IMPLEMENTATION BUILT AND PARKED 2026-09-17** at `parcel/crw-panel` tip `4585bf1` (worktree `../oracle-crw`; agent's figures: debug 91/3013/0/11,
+release 91/3016/0/8; W10 ≈ +0.04-0.08 ms/present, nothing when unserved). **HOLD at re-vendor: do NOT merge before the hub's SHA carrying §11.50
++ schema** (a fresh hub session writes it, booked empyrean `CRW-CONTRACT-TEXT`). At that SHA: re-vendor per `docs/2026-09-17-cr-w-landing.md` §6,
+un-ignore `the_cr_w_vectors_validate_the_way_the_file_says_they_do`, replace vector cases 1-4 with `capture_cr_w_vector_replies` output, drop R1
+cases 12-16, move both pins; STOP if the hub's schema needs a key beyond kind/panel/text/rendered/truncated/unrenderable. Then verify firsthand
+(nothing about this parcel is verified by this seat yet), land, message aurora (reviewer) and sigil. Four Q2 look calls for him in the note.
+**BOUNDARY 2026-09-17 (session 28).** `F-BANKED-ADDR-AMBIGUITY` re-derived and NOT dispatched: it is a contract change (typed bank key /
+`romCrc32`) and its own design doc says no suite ROM banks, so nothing depends on it. A fresh session should weigh it against
+`LIVE-EFFECTS-NUDGES` and `F-Z80-ACCESSES-UNWATCHED` before taking it, not take it because it reads `next`. The live item is the CR-W re-vendor above.
+**CR-W CONTRACT TEXT LANDED at empyrean `265efaa7`, VERIFIED HERE** (ancestor of their `origin/main`; §11.50 + §6 bullets + §8 item 31 + schema).
+Three spike corrections are NORMATIVE (floating window in the drawn set; main surface then windows in draw order, never `Tab::ALL`; an empty text
+shape is not a run). **R1 dropped ⇒ vector cases 11-15 are RETIRED, not ignored**: the hub measured that their three declared-failure cases do NOT
+go red, because `initialize.capabilities` is open — a fail-vector the schema cannot refuse. Re-vendor dispatched to the parked agent (resumed with
+its context), with the hub's 11-case agreement to be re-measured here rather than taken. ⚑ **The hub CORRECTED its own morning ruling: sigil does
+NOT vendor `protocol.md`; this lane is the only vendor.**
+**CR-W LANDED 2026-09-17, merge `106b659`, `F-PANELS-INVISIBLE-TO-SCREEN-TEXT` CLOSED** (agent tip `3bae30d`; land.sh GREEN, release 91/91
+3017/0/7; debug 91/3014/0/10 and a red-first reproduced here; vendored schema sha256-identical to empyrean `265efaa7`, checked at this seat).
+Vectors: 11 cases, 5 accepted / 6 refused, each refusal citing its own rule; R1's five retired. ⚑ **The lockstep was MEASURED, not assumed**:
+with the pre-CR-W schema bytes restored the pin test AND the vectors row go red, so the re-vendor is what admits the kind. **Owed: aurora's
+review (not a gate) and his Q2 look** (`docs/2026-09-17-cr-w-landing.md`) — the first is Registers' `aether` line cut at the pane edge with no `…`.
