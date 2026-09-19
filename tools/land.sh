@@ -865,8 +865,13 @@ if [ "$DO_DEBUG_SUITE" = 1 ]; then
 # Derived, never hardcoded, for the reason G6 gives at length — and derived SEPARATELY from G6's
 # release number rather than reused, because the two profiles do not run the same set: the three
 # replay playthroughs are `#[cfg_attr(debug_assertions, ignore)]`, and `required-features` can
-# resolve differently. Measured 2026-09-19: 91 debug legs against 75 release legs, so a shared
-# expectation would be wrong in the direction that makes D6 unable to fire.
+#
+# ⚑ THE SETS DIFFER EVEN WHEN THE COUNTS DO NOT, and this comment first claimed otherwise. It said
+#   "91 debug legs against 75 release legs" — 75 taken from this file's own older header rather
+#   than from a run. Measured on the landing of this commit: **both derive 91**. The reason to
+#   derive separately is therefore NOT that the numbers differ today; it is that the SELECTIONS do,
+#   and nothing keeps them equal. A shared expectation would be a coincidence that a new
+#   debug-ignored test silently ends, in the direction that makes D6 unable to fire.
 #
 # Its `--no-run` build is the one D5 reuses, exactly as G6's warms G7.
 # --------------------------------------------------------------------------------------------

@@ -23,8 +23,10 @@ WHAT IT CHECKS, AND WHERE EACH RULE COMES FROM
 * **`at`, `headline`, `matters` on every log entry.** Derived from the corpus rather than invented: all
   137 entries at the revision this was written carry exactly those three, plus `detail` on 133 and
   `refs`/`project` on a few. `detail` is therefore NOT required.
-* **The status document's eight top-level keys.** Stable across every one of the last twelve revisions
-  that touched the file.
+* **The status document's six REQUIRED top-level keys** (`focus`, `inFlight`, `blockedOnOwner`,
+  `nextBoundary`, `queue`, `updatedAt`), plus `awaiting` and `atBoundary` which the contract marks
+  optional. ⚑ This line said "eight" until 2026-09-19, and requiring all eight was the copy
+  outrunning its authority — see the note above `STATUS_KEYS` for the measurement that settled it.
 * **Every queue row carries `id`, `title` and `state`, and `state` is one of `doing | next | open |
   blocked`.** ⚑ The vocabulary is the CONTRACT's (`empyrean contract/LANE_STATUS.md`) and this repo's
   copy of it is a precedent narrative in `docs/OVERSEER-REFERENCE.md`. It is written out here rather
