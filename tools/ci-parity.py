@@ -137,7 +137,7 @@ MAP = {
     "ci.yml:determinism-gate/Determinism gate + invariant proptests": dict(
         sha="8196c8670dd2",
         kind="RUN",
-        gate="G6d",
+        gate="D3",
         note="byte-identical command, debug profile, --nocapture. It is CI's most-guarded job "
         "(everything else `needs:` it), and it was the one CI job with no local counterpart at all.",
     ),
@@ -164,10 +164,10 @@ MAP = {
     "ci.yml:build-test-lint/Clippy (deny warnings)": dict(
         sha="192f29c22f65",
         kind="RUN",
-        gate="G5b",
+        gate="D1",
         note="DEBUG clippy, `--all-targets -- -D warnings`. land.sh's G5 is the RELEASE variant and "
         "is NOT the same lint set: `cfg(debug_assertions)` code is compiled in one and out of the "
-        "other, so a lint inside a debug-only block is invisible to G5. G5b runs CI's exact command "
+        "other, so a lint inside a debug-only block is invisible to G5. D1 runs CI's exact command "
         "and G5 stays as the stronger-in-the-other-direction release pass. Measured 2026-09-19: "
         "19 s on a warm tree.",
     ),
@@ -195,7 +195,7 @@ MAP = {
         gate="G6b",
         note="CI names the pin in DEBUG; land.sh's G6b names it in RELEASE. Same test, same banner, "
         "different build. Left as DIFFERS rather than adding a fourth invocation: the gate's job is "
-        "to NAME the chain and both do, and when --debug-suite runs, the debug suite executes this "
+        "to NAME the chain and both do, and when the debug arm runs, D5 executes this "
         "test as one of its legs. What is genuinely unrun in a release-only landing is the debug "
         "build of aeon_pin — 1 s, and it fails only if the pin data is unreadable, which the release "
         "run already proves.",
@@ -203,7 +203,7 @@ MAP = {
     "ci.yml:build-test-lint/Corpus guards (name them in the log)": dict(
         sha="6667c60ed428",
         kind="RUN",
-        gate="G6c",
+        gate="D2",
         note="`./tools/ci-corpus-guards.sh`, the same script. land.sh's G1 printed a note TELLING the "
         "reader they could run it and never ran it — the shape this whole parcel is about. It needs "
         "CI=1, which land.sh exports at G1. Measured: 7 s.",
@@ -211,11 +211,11 @@ MAP = {
     "ci.yml:build-test-lint/Test": dict(
         sha="ec4556a17852",
         kind="DIFFERS",
-        gate="G7d",
+        gate="D5",
         note="**THE MEASURED GAP.** `cargo test --workspace` in DEBUG. land.sh's G7 is the same "
         "selection in RELEASE, and release does not subsume debug in either direction: debug "
         "compiles `debug_assertions` code (which is how run 35418036061 went red on a landing that "
-        "was green here) and release runs the three replay playthroughs that debug ignores. G7d runs "
+        "was green here) and release runs the three replay playthroughs that debug ignores. D5 runs "
         "CI's exact command and is ON BY DEFAULT; `--no-debug-suite` skips it and the report then "
         "names it as a gap rather than implying it ran.",
     ),
