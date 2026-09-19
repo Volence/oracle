@@ -1192,9 +1192,12 @@ pub fn bands(raw: &[u8]) -> Bands {
 // * **The scratch has already MOVED.** `NOTE` §6.1 records `Parallax_Scratch_Config` at `$FFFFEA26`;
 //   `s4.debug.lst` as built on 2026-09-18 puts it at **`$FFFFEA46`**. It is at the RAM tail inside a
 //   `@shape_divergent` group, so it moves whenever any other debug-RAM group changes size — which is an
-//   ordinary aeon commit, not a mistake. A [`Channel::drift`]-style positional refusal on this symbol would
-//   refuse the whole feature on a healthy build, so the noted addresses are kept as **witnesses only**
-//   ([`SCRATCH_NOTED_ADDR`]) and nothing refuses on them.
+//   ordinary aeon commit, not a mistake. A positional refusal on this symbol would refuse the whole
+//   feature on a healthy build, so the noted addresses are kept as **witnesses only**
+//   ([`SCRATCH_NOTED_ADDR`]) and nothing refuses on them. ⚑ **That finding has since been generalised**:
+//   [`Channel::witness`] is the same decision for the three channel selectors, which used to refuse on
+//   the same comparison and were refusing two of three gestures on a healthy build by the time it was
+//   measured. This surface got there first.
 // * **The band-record stride is PER GAME.** It is 32 bytes in `s4.debug` and **10** in `demo.debug`
 //   (measured: span `$FFFFE60E - $FFFFE550` = 190 = 30 + 10 × 16). `NOTE` §6.4's *"`sizeof(band_record)`
 //   is **32** for this game"* says so, and a 32 transcribed here would have addressed demo's band 1 inside
@@ -1287,11 +1290,17 @@ pub const SCRATCH_PROC: &str = "Parallax_InstallScratch";
 
 /// [`SCRATCH`]'s address as [`NOTE`] §6.1 records it, **kept as a witness and never compared against**.
 ///
-/// The distinction from [`Channel::noted_addr`] is load-bearing rather than pedantic, and it is measured:
-/// the note says `$FFFFEA26` and `s4.debug.lst` built 2026-09-18 says `$FFFFEA46`. The symbol is at the
-/// RAM tail inside a size-varying `@shape_divergent` group, so it moves on ordinary aeon commits, and a
-/// drift refusal here would refuse a healthy build. `Parallax_Current_Config` is engine RAM at a fixed
-/// offset and is a different case, which is why *it* is still drift-checked.
+/// It is measured: the note says `$FFFFEA26` and `s4.debug.lst` built 2026-09-18 says `$FFFFEA46`. The
+/// symbol is at the RAM tail inside a size-varying `@shape_divergent` group, so it moves on ordinary
+/// aeon commits, and a refusal here would refuse a healthy build.
+///
+/// ⚑ **This used to read that `Parallax_Current_Config` is engine RAM at a fixed offset and is a
+/// different case, which is why it was still drift-checked. That sentence was wrong**, and it is
+/// corrected here rather than deleted because it is exactly the reasoning the channel refusal rested
+/// on. Engine RAM at a fixed offset inside its own block still moves whenever a block ABOVE it changes
+/// size, which is what aeon `61918621` did: `Raster_Program` slid `$20` and `BgAnim_Table_Ptr` slid
+/// `$20` while nothing about their layout changed at all. There is no "different case"; there is one
+/// case, and [`Channel::noted_addr`] is now the same kind of witness this constant always was.
 pub const SCRATCH_NOTED_ADDR: u32 = 0xFFFF_EA26;
 
 /// The equate giving `sizeof(parallax_config)` — the header's length, and band record 0's offset.
@@ -2124,8 +2133,9 @@ pub fn resolve(c: &mut impl Caller, name: &str) -> Result<(u32, u32), Refusal> {
 /// in `s4.lst` and once in `s4.debug.lst`, while `Parallax_Current_Config` occurs once in both.
 pub fn available(c: &mut impl Caller, channel: &Channel) -> Result<u32, Refusal> {
     match resolve(c, channel.selector) {
-        // ⚑ The RAW spelling, because both things done with it next, `forbidden` and `Channel::drift`,
-        // compare against addresses transcribed from the note in that spelling.
+        // ⚑ The RAW spelling, because both things done with it next, `forbidden` and
+        // `Channel::witness`, compare against addresses in that spelling: `forbidden` against the
+        // cursor as the listing resolves it, and the witness against the note's transcription.
         Ok((_, raw)) => Ok(raw),
         Err(_) if channel.debug_only => Err(Refusal::window(
             "debugOnlyChannel",
@@ -2400,7 +2410,7 @@ impl Wrote {
 ///    gesture, so every cell below is measured against one listing rather than re-resolved per cell.
 /// 3. **[`forbidden`]**, on the live cell's name and resolved address independently.
 /// 4. **[`layout`]**, refusing when the loaded listing's own layout no longer matches the struct this
-///    write-set was transcribed against. ⚑ This is where step 4 used to be a [`Channel::drift`]
+///    write-set was transcribed against. ⚑ This is where step 4 used to be a `Channel::drift`
 ///    refusal on an address, which refused every raster and every bands gesture on a healthy build;
 ///    see the module header. The note survives as [`Wrote::drift`], stated and not blocking.
 /// 5. **Resolve the target by name**, so the value written is the listing's and not this crate's.
@@ -2876,11 +2886,12 @@ impl Nudging {
     /// **The derivation, said out loud**, because a stride nobody can see is a stride nobody can check.
     ///
     /// ⚑ **It also states when the listing has moved past [`SCRATCH_NOTED_ADDR`], and says that is fine.**
-    /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree and, on
-    /// every other symbol this module touches, a disagreement is a refusal ([`Channel::drift`]). So the
-    /// difference is named where it will be noticed, with the reason it is benign here: the symbol is at
-    /// the RAM tail inside a size-varying `@shape_divergent` group and moves on ordinary aeon commits. An
-    /// unexplained disagreement on a surface whose sibling refuses for it is a reader's hour.
+    /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree. When
+    /// this was written every other symbol in the module answered such a disagreement with a refusal,
+    /// and this line existed to say why this one did not; [`Channel::witness`] has since made *stating
+    /// it* the rule rather than the exception, and the line is kept because the reason it gives is the
+    /// specific one: the symbol is at the RAM tail inside a size-varying `@shape_divergent` group and
+    /// moves on ordinary aeon commits.
     pub fn shape_line(&self) -> String {
         let mut s = format!(
             "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. The stride \
@@ -5818,10 +5829,12 @@ mod tests {
     /// ⚑ **THE NOTE'S ADDRESS IS A WITNESS AND THE LISTING HAS ALREADY MOVED PAST IT.**
     ///
     /// This is the measurement that decides the parcel's shape, so it is a row rather than a comment.
-    /// [`Channel::drift`] REFUSES when a listing and the note disagree about a selector's address, and
+    /// The channel selectors used to REFUSE when a listing and the note disagreed about an address, and
     /// copying that discipline here would have been the obvious thing — and would refuse the whole feature
     /// on a healthy build: `Parallax_Scratch_Config` is at the RAM tail inside a size-varying
-    /// `@shape_divergent` group and has already moved $20 since `NOTE` §6.1 recorded it.
+    /// `@shape_divergent` group and has already moved $20 since `NOTE` §6.1 recorded it. ⚑ **That
+    /// refusal is gone** ([`Channel::witness`]) for the same finding, arrived at independently on the
+    /// three selectors; this row is where it was measured first.
     ///
     /// So the gate is: the note's number and the listing's differ, **and the hook still works**.
     #[test]
@@ -5946,10 +5959,9 @@ mod tests {
 
     /// ⚑ **THE MOVED ADDRESS IS SAID ON SCREEN, not only in a comment.**
     ///
-    /// A reader comparing this panel against `NOTE` §6.1 finds the two addresses disagree, and on every
-    /// other symbol this module touches a disagreement is a **refusal** ([`Channel::drift`]). So the shape
-    /// line names the difference and says why it is benign here. Left out, the most likely reading of the
-    /// discrepancy is the one the panel refuses everywhere else for, which is an hour.
+    /// A reader comparing this panel against `NOTE` §6.1 finds the two addresses disagree, so the shape
+    /// line names the difference and says why it is benign here. Left out, the most likely reading of a
+    /// discrepancy is the one this module used to refuse everywhere else for, which is an hour.
     #[test]
     fn the_shape_line_names_the_notes_address_when_the_listing_has_moved_past_it() {
         let mut f = armed(2);
@@ -5984,8 +5996,8 @@ mod tests {
         );
         assert!(
             line.contains("nothing refuses on it"),
-            "and it must say the disagreement is deliberately not a refusal, which is what a reader of \
-             `Channel::drift` will otherwise assume it should be: {line}"
+            "and it must say the disagreement is deliberately not a refusal, which is what a reader \
+             coming from this module's older shape will otherwise assume it should be: {line}"
         );
     }
 
