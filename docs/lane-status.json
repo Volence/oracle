@@ -1,12 +1,6 @@
 {
-  "focus": "Making the window stop saying 'there is no window' in the instant before it draws its first frame.",
-  "inFlight": [
-    {
-      "what": "Removing the startup state where a window that exists reports that it does not",
-      "where": "branch parcel/first-present-order",
-      "agent": true
-    }
-  ],
+  "focus": "A 'random' test failure from six days ago was a real bug. Fixed, and the window no longer denies itself.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the first-present parcel returns and is verified here.",
+  "nextBoundary": "Here now: ten landings, main green, nothing running.",
   "queue": [
     {
       "id": "PANEL-CLIP-MARK",
@@ -30,12 +24,12 @@
       "title": "Cut panel text now says it was cut: 91 such lines fixed across 28 window sizes. The 67 left are whole tables or controls wider than their pane, which is card d-54."
     },
     {
-      "id": "F-FIRST-PRESENT-REFUSAL",
-      "state": "doing",
-      "size": "S",
+      "id": "F-REDS-WITHOUT-A-CAUSE",
+      "state": "open",
+      "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A window that exists but has not drawn yet reports 'there is no window'. The hub ruled; the half that removes the state rather than describing it is ours to build."
+      "title": "Nine automated test failures in recent history were never explained. One I did chase turned out to be a real bug, so the rest are unmeasured rather than harmless."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -110,7 +104,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T09:39:47Z"
+  "awaiting": "three small looks for you, none blocking: d-54; the nudge controls moving the picture; the raster and bands channels selecting.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T10:48:41Z"
 }
