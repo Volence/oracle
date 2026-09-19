@@ -1,6 +1,12 @@
 {
-  "focus": "Every test ROM in the corpus that reports a verdict now reports one, and all of them pass.",
-  "inFlight": [],
+  "focus": "A panel line pushed entirely off its pane reported no loss at all. Fixing it so total loss shows.",
+  "inFlight": [
+    {
+      "what": "Making a wholly cut-off panel line report itself as cut instead of as absent",
+      "where": "branch parcel/panel-clip-total-loss",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -13,11 +19,11 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: all three landings done, pushed, nothing running. Only the last landing's CI is unread.",
+  "nextBoundary": "When the panel-clip parcel returns and is verified here.",
   "queue": [
     {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
@@ -25,7 +31,7 @@
     },
     {
       "id": "PANEL-CLIP-MARK",
-      "state": "open",
+      "state": "next",
       "size": "S",
       "blockedBy": "your card d-54",
       "project": "ORACLE-DEBUG-UI",
@@ -104,7 +110,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": "nothing blocking; the tests are done and I'd take the ruled panel-clip row next. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T02:26:49Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T02:29:32Z"
 }
