@@ -1,6 +1,12 @@
 {
-  "focus": "You can now turn a live effect's numbers while the game runs. Needs your eyes on the picture once.",
-  "inFlight": [],
+  "focus": "A guard of ours is keyed on an engine address that moved. aeon's sweep found it; fixing it.",
+  "inFlight": [
+    {
+      "what": "A safety guard keyed on a hardcoded engine address that has since moved -- making it resolve the address instead",
+      "where": "branch fix/lab-index-resolve",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -15,6 +21,14 @@
   ],
   "nextBoundary": "Here now: seven landings, main green, nothing running, boot read at 44 KB of its 100 KB bound.",
   "queue": [
+    {
+      "id": "F-LAB-INDEX-ADDR-TRANSCRIBED",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LIVE-EFFECTS",
+      "title": "A guard that stops the panel writing the wrong cell knows that cell by a hardcoded address, and aeon moved it by half a kilobyte. It now guards the wrong address in both directions."
+    },
     {
       "id": "PANEL-CLIP-MARK",
       "state": "blocked",
@@ -104,7 +118,7 @@
       "title": "All buildable panel items are done. Left: things for your eyes (look questions 1-33 in the audit page), one hidden raw-data fallback in Objects, and a small slot refresh follow-up."
     }
   ],
-  "awaiting": "two things for you, neither blocking: d-54 (wrap long panel lines, or widen the panes?) and a look at the new nudge controls actually changing the picture -- no test can see that.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-19T06:51:51Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-19T06:55:10Z"
 }
