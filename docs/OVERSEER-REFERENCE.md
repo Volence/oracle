@@ -28,6 +28,35 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ MY OWN AD-HOC QUERIES PRODUCED A FALSE ABSENCE THREE TIMES IN ONE NIGHT, ALL AFTER I BANKED THE RULE
+AGAINST IT** *(2026-09-19; the third was caught by an agent auditing my survey, the first two by me)*.
+(1) A CI waiter on `--limit 8` whose SHA fell out of the window — an empty filter reads exactly like
+*in progress*. (2) A sweep regex that reported *"log expired or not a test"* for eight runs whose logs were
+fully retrievable. (3) A survey that reported **"logs gone"** for three runs — **re-verified here: 1683 /
+1675 / 1692 lines each, all panicking at `server.rs:1339`** — because my `gh run list --limit 200` window had
+been pushed past them by the night's own commits. ⚑ **Every one was a hand-rolled query whose EMPTY RESULT I
+read as a FACT, and I had banked "an absence is never a finding" hours before the second and third.**
+▶ **Bar: an ad-hoc query's silence is not evidence until the query has been shown to fire. Run a POSITIVE
+CONTROL against a case known to contain the thing, in the same invocation, before reporting a zero.** The
+agent did exactly that on this row (`noDisplay` appears exactly once in run `34752339602`, zero in a negative
+control) and that is why its zeros could be trusted where mine could not.
+⚑ **And the failure is not in the rule, it is in where the rule gets applied**: I applied it scrupulously to
+*parcels' evidence* and never once to *my own tooling*, which is the author-versus-carrier hole in a new
+costume — the discipline runs on the thing being judged, never on the instrument doing the judging.
+
+**⚑ A RED WAS ENUMERATED AS UNCHASED WHILE ITS FIX WAS ALREADY IN THREE OF THIS LANE'S OWN DOCUMENTS**
+*(same row; booked by the parcel as `F-RED-NOT-CROSS-CHECKED`)*. `462e9cf` went into a "reds without a cause"
+list hours after its cause was diagnosed, fixed at `1235148`, and written up in `lane-log.jsonl`,
+`OVERSEER-LOG.md` and a dated doc — **and the fix commit names the CI run outright.** One grep would have
+caught it. ▶ **Bar: before chasing a red, grep the lane's own records for its SHA and its run id.** A list of
+open questions assembled without consulting the answers already banked is a self-inflicted parcel.
+
+**⚑ A GREEN RECORDED FROM A COMMAND THAT COULD NOT FAIL, IN THIS LANE'S OWN VERIFICATION RECORD** *(same
+row)*. `docs/lane-log.jsonl` at `2026-09-16T03:26:06Z` records *"clippy exit 0"* on the merged tree — and CI
+failed **that same day** on a clippy `nonminimal_bool`. The recorded command lacked **`-D warnings`**, so the
+lint it missed could never have reddened it. **A verification line naming a tool is not a verification: the
+FLAGS are the claim.** Quote the invocation, not the tool's name.
+
 **⚑ A CARRIED COPY IS CORRECT THE DAY IT IS WRITTEN AND HAS NOTHING THAT NOTICES WHEN IT STOPS BEING**
 *(2026-09-19; aeon's RAM sweep found our defect, the hub paired it with aeon's own, banked at empyrean
 `877e0fc0`)*. ⚑ **THE SUITE ALREADY HAD THIS RULE AND BOTH INSTANCES PREDATE ANYONE APPLYING IT** — verified
