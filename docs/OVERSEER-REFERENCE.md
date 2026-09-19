@@ -28,6 +28,22 @@ cannot protect a read that already happened.
 
 ## The bars (house methods, each earned by a measured failure; do not thin)
 
+**⚑ TESTED AGAINST THE INSTANCE, NOT THE MECHANISM — and this is WORSE than a control arm written down and
+never run** *(2026-09-19, my own accepted test, red on CI hours after I landed it; the hub banked it above the
+unrun-control rule at empyrean `24c23e78` for exactly this reason)*. A panel comparison masked **each ASCII
+digit to `#`**, and its own doc comment records why: a raw comparison had failed on `272.73` vs `243.24`.
+**Masking genuinely fixed that — same width.** It cannot fix a width change: `9.09` masks to `#.##` and
+`272.73` to `###.##`, and `format!("{:.2}", fps_value)` varies in integer digits with machine speed.
+**An unrun control is a claim nobody tested; this one WAS tested, passed honestly, and was still narrow** —
+every signal a reviewer looks for was present and correct.
+⚑ **The tell: THE SAMPLE AND THE TEST CASE ARE THE SAME OBJECT.** The failure that prompted the repair became
+the case that validated it, so nothing ever asked what else the mechanism could produce.
+▶ **Operational question, at every fix: what is the SPACE of inputs this failure mode can produce, and which
+of them does the fix cover? If the answer is "the one we saw", it is a pin, not a repair.**
+⚑ **And the obvious remedy was refused for the same reason:** a length-insensitive mask would be another
+repair aimed at one sample, because a wider number changes what fits in a pane and therefore **which runs
+exist at all**. Fix the source of the non-determinism, not the comparison that reveals it.
+
 **⚑ A CHANNEL THAT CANNOT VARY IS NOT EVIDENCE ABOUT THE QUESTION YOU ARE ASKING** *(2026-09-19, from the
 `m68k_opcode_sizes` diagnosis; the hub banked it as its own section at empyrean `d1d98d4b`)*. We read
 `m68k_opcode_sizes`'s plane text at three budgets, saw it identical, and treated that as evidence about the
@@ -503,6 +519,20 @@ minutes and reddened `main` with the one it shortened. The omission is invisible
 landing: the parcel that skipped a check had the HEAVIEST evidence of the three, an 87-leg suite run.)*
 
 **On the MERGED tree, never branch-side, in this order. All five, every time, whatever the parcel:**
+
+⚑ **AND THE LIST IS NOT A CI PREDICTION — `tools/land.sh` RUNS THE RELEASE SUITE, CI RUNS DEBUG** *(2026-09-19,
+measured when my own panel-clip landing went RED on CI run `35418036061` after land.sh reported 17 gates green
+and 3027 passed)*. **Three of that night's five landings reported release totals only.** ▶ **Bar: a landing
+that adds or changes a test touching time-derived text, or anything a profile could reorder, owes a DEBUG run
+before the push** — `cargo test --workspace` (no `--release`), leg count reported. ⚑ **The part worth more
+than the bar: `land.sh`'s own header says the profiles differ, in as many words, and I inferred a CI
+prediction from it anyway.** The fact was documented and the inference was made regardless — the
+comment-silent-on-the-load-bearing-term class from the other side, where the comment *said* it and nobody
+read it.
+⚑ **And a green on THIS BOX proves nothing about a contended runner.** The failing test was green here — alone
+in debug, and in the full `-p oracle-player` debug suite with `CI=1`, 520 passed in 47.82s — while CI's leg
+took 97.38s and failed. **So a fix for a timing-sensitive failure must FORCE the condition locally and show
+the test go RED first**, or it is a guess wearing a green.
 
 1. `cargo fmt --all -- --check` — exit code captured **outside any pipe**.
 2. `cargo clippy --workspace --all-targets -- -D warnings` — **`--workspace` and `--all-targets`**, not
