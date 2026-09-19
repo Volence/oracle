@@ -49,6 +49,18 @@ lengths, and nothing in a passing suite distinguishes them.
 `m68k_opcode_sizes` (`0x5436cda5786ea450` → `0x102fe6ffdd51e11c` → `0x5330009202fa2287` →
 `0xb1e54eed02744f27` at 120/300/600/1800), `window_distortion` (`…295b4e2c` → `…01e7c61e`) and
 `vdp_test_register` (`…306e928b` → `…f2181823`). The other five visual rows are identical at both budgets.
+
+⚑ **CORRECTED 2026-09-19, AGAINST THIS SEAT, AND THE METHOD IS THE LESSON: `m68k_opcode_sizes` DOES SETTLE
+— at frame 685, holding identical to 3600 (verified here at 400/600/675/685/800/1800/3600). My sweep's four
+samples straddled two transitions, and I read "four different values" as "never settles".** ▶ **FOUR
+DISAGREEING SAMPLES CANNOT DISTINGUISH *never settles* FROM *settles later than you looked*. Only two
+AGREEING samples, adjacent in one regime, prove convergence — and my sweep never took two.** I applied the
+rule's falsifier and never its confirmer, which is the same shape as a red on the wrong guard: the
+instrument fired, and I read it as answering a question it cannot answer. **The pin was unsettled because
+the budget was too SHORT** (120 frames stops 27.8% through the ROM's sweep), which is the opposite diagnosis
+and the opposite fix. **The other two rows stand** — re-checked independently: `window_distortion` genuinely
+animates and is even periodic (f=600 ≡ f=2400), `vdp_test_register` likewise. **The rule is unharmed; two of
+its three instances were right and its headline instance was mine and wrong.**
 Each of the three still matches its pinned hash at 120 frames exactly, which is the whole problem:
 **a stale golden is WRONG and will disagree with a correct run; one of these is RIGHT ABOUT A MOMENT NOBODY
 CHOSE and will keep agreeing forever**, so no gate resting on it can ever fire for this reason. The

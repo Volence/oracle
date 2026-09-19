@@ -659,3 +659,36 @@ machine is failing to complete it. **Re-derive before dispatch, and if it is the
 harness row.
 
 **CI READ GREEN for the vcounter landing**, read to completion with `gh run view`: run `35412782076` on **`f729d7b`**, `conclusion=success`, all three jobs green — *Determinism gate*, *Replay playthroughs (release)*, *Build, test, clippy, fmt*. ⚑ **The SHA is the pushed TIP, not the merge, and that substitution is PROVED rather than assumed**: `0742cec` (the merge) has **no CI run at all** — a multi-commit push creates one run, for the tip — and `git diff --stat 0742cec f729d7b -- crates/` is **empty**, so that run tested the landing's code byte-for-byte. Banked in the reference beside the window defect it is indistinguishable from: **both failures print nothing, and the discriminator is whether the run EXISTS, which no status poll asks.**
+
+
+**`TESTROM-OPCODE-SIZES-NEVER-SETTLES` LANDED 2026-09-19, merge `d145636`; THE ROW'S NAME IS NOW WRONG IN BOTH HALVES AND THAT IS THE RESULT**
+(agent tip `78d19cd`, four commits; **nothing under `crates/oracle-core/src/` touched** — fourth consecutive parcel). **The ROM has a verdict,
+our machine reaches it, and it is `2/2 crc32 sizemap=0x5c6da501 classmap=0x20ac2324` — the strongest verdict in the corpus.** It measures the
+length of **every one of the 65536 opcode words** (each run at `$FFFF86` in front of `$F000` padding; vectors 4/10/11 land at ROM `$42C`, where
+`move.w $4(a7),d1` / `subi.w #$FF86,d1` turns the trap's stacked PC into a byte count, so illegal yields 0), plots one pixel per opcode, then
+CRC-32s its own 32768-byte map and an 8192-byte measured-vs-asserted bitmap against constants baked at ROM `$56C`/`$57E` and paints colour 6 or 9.
+⚑ **THE VERDICT IS A COLOUR, NOT A WORD**, which is exactly why my printable-ASCII sweep of the image found nothing and why I read that absence as
+evidence. ⚑ **And the pass is independently recomputed over OUR machine** (`VRAM_CRC=0,8000` → `0x5c6da501`, `RAM_CRC=8000,2000` → `0x20ac2324`),
+so it is not *the ROM printed green*: **our 68000 decoder's 65536-entry length table is byte-exact against a constant computed on hardware in 2017.**
+▶ **TWO INDEPENDENT HARNESS CAUSES HID IT, AND ONLY ONE WAS A BUDGET.** (a) `scrape_visual`'s 120 frames stops **27.8%** through the sweep
+(the ROM's own counter reads `$46AF`); (b) the channel being read is an **identity nametable** (`cell = row*40+col`, ROM `$3C6`), written once
+at boot — **constant BY CONSTRUCTION, so it could never have carried a verdict at any budget.** The "ASCII character ramp" I reported is that
+map's tile indices `$20-$7E`. **A channel that cannot vary is not evidence about the thing you are asking after**, and the corpus rule the agent
+banked with it is: check the channel CAN vary before concluding there is no verdict.
+⚑ **CORRECTION AGAINST THIS SEAT, AND IT IS A METHOD DEFECT, NOT A SLIP: my "never settles" was wrong. It settles at 685 and holds to 3600**,
+verified here at 400/600/675/685/800/1800/3600. My four samples straddled two transitions. **Four DISAGREEING samples cannot distinguish
+*never settles* from *settles later than you looked*; only two AGREEING samples in one regime prove convergence, and my sweep never took two.**
+I applied the rule's falsifier and never its confirmer. The other two rows of `F-TIMED-PIN-UNSETTLED` stand (re-checked: `window_distortion` is
+periodic, f=600 ≡ f=2400). **Also corrected: my press probe fired at frame 60, before the ROM seeds its pad state at ROM `$5E4` (~frame 680);
+at frame 700 EVERY button moves the picture.** Both errors are the same shape — **a negative result from an instrument aimed at a moment when
+the answer could not exist.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `land.sh --no-push` GREEN G1-G10, **91/91 legs, 3024 passed / 0 failed / 7 ignored**, marker reached,
+**and the tree untouched for the whole run** (my own G9/G10 lesson from earlier tonight, held). Currency 2/3/9/5; row printed here with
+`--nocapture`. **Red-first reproduced INDEPENDENTLY, aimed deliberately at the one precondition the agent said it could NOT isolate**: ceiling
+`2400 → 400`, i.e. give up before the ROM parks — shown on disk before the run, restored from committed `d145636`. **8 passed / 1 failed**, and
+the two layers both worked: the note names the failing condition (*"parked in the pad wait: no (pc=$000438)"* and **"This row measured NOTHING
+— it is not a pass and not a fail"**) while the **row-count bijection** at `:2412` is what turns it red. An unestablished run drops its row, and
+the count guard is what refuses to let a dropped row read as a clean scorecard.
+**EVERY SCRAPEABLE ROM IN THE CORPUS NOW REPORTS A VERDICT AND EVERY ONE PASSES.** `vcounter` and `m68k_opcode_sizes` were the last two carrying
+a picture and no verdict; Q2 is closed. **NEXT: `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED`** (hub-ruled, buildable) — brief the substituted defining
+CLAUSE and the pre-ruled row-placement acceptance condition, never the paragraph.
