@@ -1,12 +1,6 @@
 {
-  "focus": "Diagnosing the last ROM we cannot read: its picture never stops changing and it carries no result text.",
-  "inFlight": [
-    {
-      "what": "Finding out whether the last unreadable test ROM has a verdict at all, or our machine never finishes it",
-      "where": "branch parcel/opcode-sizes-diag",
-      "agent": true
-    }
-  ],
+  "focus": "Every test ROM in the corpus that reports a verdict now reports one, and all of them pass.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,16 +13,8 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "When the diagnosis returns and is verified here. Both landings' CI is read and green.",
+  "nextBoundary": "Here now: all three landings done, pushed, nothing running. Only the last landing's CI is unread.",
   "queue": [
-    {
-      "id": "TESTROM-OPCODE-SIZES-NEVER-SETTLES",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The opcode-size ROM's picture keeps changing out to 1800 frames and no button moves it, so what we pinned is a snapshot of something still moving. Is it its design, or is our machine not finishing it?"
-    },
     {
       "id": "F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED",
       "state": "next",
@@ -118,7 +104,7 @@
       "title": "Nudging individual effect numbers is now buildable. Two constraints: only some fields have a reader at runtime, and the memory it needs is absent in a release build while the entry point resolves."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-19T02:12:21Z"
+  "awaiting": "nothing blocking; the tests are done and I'd take the ruled panel-clip row next. Card d-54 when you have a moment: wrap long panel lines, or widen the panes?",
+  "atBoundary": true,
+  "updatedAt": "2026-09-19T02:26:49Z"
 }
