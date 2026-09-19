@@ -749,3 +749,30 @@ pushed tip, four of those byte-identical and one differing only in comments.** �
 `land.sh` green is not a CI prediction, a green recorded from a command that could not fail, and three false absences from my own tooling.
 The register where it happened is the one this night keeps naming: a summary sentence at the end of a report, written from the feeling of the
 work rather than from a loop over it.**
+
+**`DATA-DISPLAY-AUDIT`'s LAST BUILDABLE ITEM LANDED 2026-09-19, merge `2414223`** (agent tip `3bac5f4`, one commit, `oracle-player` only).
+⚑ **RE-DERIVED BEFORE DISPATCH AND THE ROW WAS WRONG: there was ONE buildable item, not two.** The "slot refresh follow-up" my board and the hub
+both called buildable is **audit item 35, under the heading *"What a frame still has to answer (look calls 34-36, none seen)"***, and its text is
+a question addressed to him. **The hub called it buildable because it was reading my row** — the exact his-versus-not-done-yet confusion the
+cleanup existed to remove, aimed back at me. Board corrected in the same write. ▶ **The audit is 36 look calls, not 33.**
+▶ **The catch-all is closed by CALLING the treatment the other seven sites got, not restating it**: `render` + `NO_VALUE` moved to `table.rs`
+(which already owns the rest of a table cell and holds no `egui` type), and `Row::cell` is now `None => ABSENT` / `Some(v) => table::render(v)`,
+its `None` arm kept because a key the record does not carry is **not** a served `null`. ⚑ The agent's own sentence: **copying `render`'s seven
+arms into `objects.rs` "would have closed the defect and left two spellings of one rule — that is how the first one stopped being true."**
+⚑ **THE LOCK WAS WIDENED, NOT RENAMED, and the control ran in BOTH halves.** `no_served_value_can_put_raw_json_on_the_screen` keeps its name and
+now drives every `Value` variant through a **named roster** of the three renderers that turn a served value into text a person reads
+(`table::render`, `bus::describe_reply`, `objects::Row::cell`), with **`palette.rs`'s ruled `L-15` exemption named in the roster's doc so a later
+reader meets a ruling rather than a gap.** **Half one, at base with the defect live on disk: the lock printed `ok`** — reproduced firsthand, the
+**second** measurement of a name standing while its class was committed. **Half two, after the fix: the same-named same-path lock FAILS.**
+▶ **VERIFIED FIRSTHAND:** `land.sh` **28 gates PASS, 0 FAIL**, `legs=91/91`, `debug_legs=91/91`, `gates=full`, the two known `ci_gap=` rows.
+**My own red-first, independent of the agent's:** restored the catch-all (`git diff --numstat` shown first), and **both pre-existing locks fail** —
+`objects::Row::cell([]) put the JSON character '[' on the screen: "[]"` — restored, 2 passed, tree clean.
+⚑ **TWO GAPS THE PARCEL NAMED RATHER THAN LEFT:** the roster is **not derived**, so a fifth renderer added later is not in it and nothing will
+notice (deriving it needs the static type of every expression reaching a `format!`, which a source scan cannot supply — the precedent checked and
+found not to transfer); and **the name still overclaims in one narrow respect**, since all three entries are pure string functions and nothing
+here proves the string reaches the glass. **Both written into the test itself.**
+▶ **WITH THIS, THE BUILDABLE QUEUE IS EMPTY.** Every remaining row waits on him: `DATA-DISPLAY-AUDIT`'s 36 look calls, `PANEL-CLIP-MARK` behind
+`d-54` (67 held rows), `LIVE-EFFECTS-NUDGE-LOOK`, `M24-PARCEL-4-INT-LEVEL` behind `d-51`, `ROM-DROP-WAYLAND`, `PALETTE-SCOPE`, and the contract
+rows behind hub rulings. **`next` is set to `PANEL-CLIP-MARK` WITH its blocker visible, under `LANE_STATUS.md`'s explicit exception for a lane
+with no `doing` row** — *"what I would take when the hold lifts", the field at its most useful* — **not an invented startable row to fill a
+field.**
