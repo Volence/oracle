@@ -439,6 +439,9 @@ from the prose alone:
 * **"All the tests" is THREE items, and only the first is a defect.** (2) **Q1: the H40 half has never been run at
   all** — the ROM says press `Start`, only `C` toggles it for us, so nine tests are unmeasured and a mode we have
   never scraped is not a mode we can claim. (3) **Q2: `vcounter` and `m68k_opcode_sizes` are unscraped by choice**,
+  ⚑ *[CORRECTED 2026-09-19: "by choice" was true of neither. `vcounter` is now a verdict row — its stated reason (a
+  proportional font needing a glyph table) was FALSE, see the landing below. `m68k_opcode_sizes`'s own reason is
+  measured as half false too: a longer budget does not reach a result page. Left standing and corrected here.]*
   carrying a picture-pin and no verdict. **Until those are read, "all the tests pass" is not a sentence this lane
   can honestly say**, which is the whole reason they are on the board rather than in a footnote.
 
@@ -609,7 +612,7 @@ figure*. ▶ Relayed to the hub, because the agent's question is the right one a
 in other lanes' prose?**
 
 **NEXT: `TESTROM-UNSCRAPED-PAIR`** (open question Q2) — `vcounter` and `m68k_opcode_sizes` carry a picture-pin and no verdict, so
-"all the tests pass" is still not a sentence this lane can honestly say. **Re-derive before dispatch**: `vcounter` needs a glyph table for a
+"all the tests pass" is still not a sentence this lane can honestly say. **Re-derive before dispatch**: `vcounter` **did NOT need a glyph table — that reason was false, see the landing below; this clause is left standing and corrected rather than edited away**, and what it really needed was menu navigation. The clause read: a glyph table for a
 proportional font, and `m68k_opcode_sizes` may need only a longer budget or an input to reach its result page — those are two different
 parcels wearing one row, and the row should be split if the re-derivation says so. Then the ruled
 `F-PANEL-CLIP-TOTAL-LOSS-UNSIGNALLED` (brief the substituted defining CLAUSE and the pre-ruled row-placement acceptance condition, never the
@@ -617,3 +620,40 @@ paragraph).
 
 **CI READ GREEN for `821ad41`**, read to completion with `gh run view` rather than off a list's status field: run `35409354288`, `status=completed conclusion=success`, **all three jobs named and green** — *Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*. The "CI queued, NOT yet read" clause in the landing entry above is left standing and corrected here, per this repo's correct-by-appending habit.
 ⚑ **Ops, against this seat, and it would have cost a silent all-night unread: my first CI waiter polled `gh run list --limit 8` for the landing SHA, and I then pushed six docs commits.** Each queued its own run, the landing SHA fell out of the eight-row window, and **the filter's empty result is indistinguishable from `in_progress`** — the loop would have run until the session ended while the answer was green the whole time. Re-armed over 60 runs, the bad waiter killed, and the probe now prints *"empty = the SHA is outside the window, not a verdict"*. Banked in `docs/OVERSEER-REFERENCE.md` under the landing checks, beside the timeout-exits-0 warning it is a sibling of. **An absence dressed as an outcome, this time in my own instrument.**
+
+**`TESTROM-VCOUNTER-MENU` LANDED 2026-09-19, merge `0742cec`** (agent tip `707b405`, three commits; **nothing under
+`crates/oracle-core/src/` touched** — third consecutive parcel holding it). ⚑ **THE ROW'S STATED REASON WAS FALSE AND HAD STOOD 56 DAYS**
+(`7b46ae2`, dated by `git log -S`, not by feel): the ledger said this ROM *"draws its results in a proportional font that is not an
+ASCII-ordered nametable"* and Q2 said scraping it *"needs a glyph table"*. It is **ordinary ASCII nametable text at font base `$100`** — the
+base `m68k_memory_test` already used, through the same `text_rows`. **There was no glyph table to build.** The real blocker was that the ROM
+is **menu-driven** and nothing drove its menu. Q2 now names `m68k_opcode_sizes` alone. **This is the bar's own instance: a booking reads as a
+reason, and nobody re-checks a reason** — only a probe finds it, and only if someone distrusts the justification.
+▶ **The row is now a VERDICT row: nine menu modes x two scan lengths (262/312), all 18 readings from ONE 428-frame boot**, because the result
+screen's `Start` is an *exit* back to the menu with the cursor and the `A` toggle intact. Mechanism, all measured: **the mode cursor is a
+PRIORITY-BIT highlight** (cell bit 15 on the selected row), invisible in the text grid, read out of the raw cells; `Up`/`Down` move one row per
+press, edge-shaped and clamped; the ROM prints `Reg: 8Crr 81rr` naming the registers the run used, and **the nine pairs are pairwise distinct**,
+which a test asserts rather than assumes. The gate is a type — `ProvenVcMode::establish`, only constructor, only route into `vc_classify` —
+checking the printed `Reg:` pair **FIRST** (it names the mode that actually ran), then the cursor row, the printed scan length, the table length
+and `Format:0`.
+⚑ **Menu item 3 (Mode 5 320x224) is a REAL PASS** — character-for-character recon R2's NTSC V28 progression. **The other eight agree BY BEING
+UNMODELLED, and the row says so in its own text**: `Vdp::v_counter` reads no register (a pure function of mclk), `ACTIVE_LINES` is *"the only
+vertical mode this core models"*, `LINES_PER_FRAME` is *"fixed at NTSC's 262"*. **Recorded, not fixed** — non-gating by charter. The comparison
+restates recon R2 rather than calling `Vdp::v_counter`, so a model change moves the ROW instead of moving the expectation with it, and the
+312-line half measures frame **length** (the wrap lands 50 lines in ⇒ 262/frame, read off the ROM) which is exactly where a V30 model at 313
+would separate.
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE:** `tools/land.sh --no-push` GREEN G1-G10, **91/91 legs, 3024 passed / 0 failed / 7 ignored**,
+marker reached; `conformance_roms` 7 → 9 tests, no new target, leg count unmoved; currency suites 2/3/9/5; the row printed here with
+`--nocapture`. **Red-first reproduced INDEPENDENTLY, a mutation distinct from the agent's seven**: `vc_select`'s target off by one (a cursor
+that OVERSHOOTS rather than failing to move), shown on disk before the run, restored from committed `0742cec` — **7 passed / 2 failed, and the
+guard that fired is the `Reg:` pair gate** (`…1625`), naming both readings: *"says it ran with reg12=$02 reg1=$40, but item 0 (M4-256x192) is
+$00/$40"*. Naming the guard is the point: the agent's own #1 and #2 fired two different guards for two mutations that look alike.
+⚑ **Ops, against this seat: I edited `docs/OVERSEER.md` WHILE the landing run was in flight.** `tools/land.sh`'s `TOLERATED_DIRTY` is exactly
+one path (`docs/lane-status.json`), so G10 would have failed the run on my edit — and committing instead would have failed G9 (*HEAD moved
+under the run*). Caught at G6 and **stashed**, which is the only move that satisfies both gates. **A landing run makes the whole tree
+read-only for its duration, and the overseer is the likeliest violator** because it is the seat doing docs work while the suite runs.
+**F-TIMED-PIN-UNSETTLED DISCHARGED in the same landing** (it was deferred only to avoid two writers in one ledger): all three timed pins now
+declare which property they rest on — `m68k_opcode_sizes` with the full four-budget measurement, `window_distortion` and `vdp_test_register`
+as determinism pins on ROMs that animate and therefore have no settled frame.
+**NEXT: `TESTROM-OPCODE-SIZES-NEVER-SETTLES`** — the last unscraped ROM, and the open question is whether it has a verdict page at all or our
+machine is failing to complete it. **Re-derive before dispatch, and if it is the latter it is a CORE finding stated as one**, not folded into a
+harness row.
