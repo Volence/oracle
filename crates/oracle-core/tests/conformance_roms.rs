@@ -1591,13 +1591,14 @@ fn vc_set_scan_len(sys: &mut System, want: u32) -> u64 {
 ///
 /// ## The four facts it is built from, each read from the machine
 ///
-/// 1. **The cursor was on this item's row**, read immediately before `Start` out of the nametable's
-///    priority bits ([`vc_cursor_row`]) — and every single step that put it there was verified
-///    ([`vc_select`]).
-/// 2. **The ROM says it programmed this item's registers.** The result screen prints `Reg: 8Crr 81rr`, the
+/// 1. **The ROM says it programmed this item's registers.** The result screen prints `Reg: 8Crr 81rr`, the
 ///    two control-port register-write words it used for the run, and the nine items' pairs are pairwise
-///    distinct ([`the_vcounter_mode_table_discriminates_the_nine_modes`]). This is the load-bearing one: it
-///    is the ROM's own statement of which mode ran, and it is a complete discriminator over the nine.
+///    distinct ([`the_vcounter_mode_table_discriminates_the_nine_modes`]). Checked FIRST because it is the
+///    ROM's own statement of which mode ran and a complete discriminator over the nine — a lost keypress
+///    fails here, naming the mode that actually ran.
+/// 2. **The cursor was on this item's row**, read immediately before `Start` out of the nametable's
+///    priority bits ([`vc_cursor_row`]) — and every single step that put it there was verified
+///    ([`vc_select`]). This is our side of the same fact, from an independent channel.
 /// 3. **The menu's scan length was the one asked for**, read off its `Lines to scan:` line.
 /// 4. **The table the ROM printed is that long.** `Lines to scan: 262` with 128 entries would mean the
 ///    pages were misread or a page was missed, which no amount of sequence-checking would notice.
@@ -1622,13 +1623,6 @@ impl ProvenVcMode {
     ) -> Self {
         let m = &VC_MODES[item];
         assert_eq!(
-            cursor_row,
-            Some(VC_MENU_ROW0 + item),
-            "the menu cursor was not on item {item} ({}) when Start was pressed, so the result screen \
-             below belongs to whatever mode WAS selected — and it would decode perfectly",
-            m.label
-        );
-        assert_eq!(
             reg,
             (m.r12, m.r1),
             "vcounter's result screen says it ran with reg12=${:02X} reg1=${:02X}, but item {item} ({}) is \
@@ -1638,6 +1632,13 @@ impl ProvenVcMode {
             m.label,
             m.r12,
             m.r1
+        );
+        assert_eq!(
+            cursor_row,
+            Some(VC_MENU_ROW0 + item),
+            "the menu cursor was not on item {item} ({}) when Start was pressed, so the result screen \
+             below belongs to whatever mode WAS selected — and it would decode perfectly",
+            m.label
         );
         assert_eq!(
             menu_scan_len,
