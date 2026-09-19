@@ -738,3 +738,11 @@ but the refs are not. Not cleaned tonight (deleting refs is the shared-machine c
 should know they are cruft, not live work.
 **NEXT: `F-TH-PULLUP-UNDISCRIMINATED`** — the residual last night's Q1 answer left standing: no corpus ROM discriminates the undriven-TH pull
 direction, and a one-instruction ROM reading `$A10003` with Control at `$00` settles it (`$FF` pull-up-high, `$B3` pull-low).
+⚑ **HUB RULING, 2026-09-19 (under delegation, overturnable): the two look calls above FOLD INTO `d-54`; do NOT file new cards.** The Go caption
+eaten whole and the state buttons at a fifth width are **the same question he already holds** — whether long content wraps or the panes widen —
+so separate cards would hand him two decisions his existing one already makes. Recorded here rather than on his board. ⚑ And the hub filed an
+obligation **against its own seat** from the `w6` find: **a ruling that CHANGES a rule must name the fixtures that encode the OLD one.** Its
+ruling and amendment both warned about the implementation (*build the rule, not the special case*) and neither mentioned the tests already
+asserting the previous clause — **which are exactly the artifacts that report success while contradicting the new text.** Banked at empyrean
+`f5beff1a` as the class *"the plant did not move; the rule did"*: unlike a stale golden, which disagrees with a correct run, **such a fixture
+agrees forever and is supposed to.**
