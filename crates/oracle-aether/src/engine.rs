@@ -8761,29 +8761,33 @@ impl Engine {
 
     /// One recorded hit, in exactly the schematized keys.
     ///
-    /// The two presence rules are **structural**, not stylistic, and are enforced here as the schema
-    /// enforces them on the wire: `old` is emitted **iff** the space is not `bus`, because `on_event` builds
-    /// every bus hit with `old: 0` unconditionally (the 68000 bus event stream carries no prior value) and
-    /// emitting that zero would assert something false; `fc` is emitted **iff** the space *is* `bus`,
-    /// because `on_vdp_write` hardwires `fc: 0` and a VDP-internal write's CPU-vs-DMA attribution is `via`.
-    /// Where `old` is present, `old != value` is the exact per-write change test — the measurement a raw
-    /// write count misleads about.
+    /// The presence rules are **structural**, not stylistic, and are enforced here as the schema enforces
+    /// them on the wire: `old` is emitted **iff** the space is not `bus`, because `on_event` builds every bus
+    /// hit with `old: 0` unconditionally (the 68000 bus event stream carries no prior value) and emitting
+    /// that zero would assert something false; `fc` is emitted **iff** the space *is* `bus` **and** `via`
+    /// is not `z80`, because `on_vdp_write` hardwires `fc: 0` (a VDP-internal write's CPU-vs-DMA attribution
+    /// is `via`) and the Z80 has no 68000 function code (§6 *The Z80 and the watch surface*, §11.52). For
+    /// the same reason a `z80` hit's `pc` — the **Z80's** — is never symbolised: `symbol`/`symbolDisp`
+    /// resolve against the 68000 listing, and naming a 68000 routine for a Z80 address would be a
+    /// confident wrong answer. Where `old` is present, `old != value` is the exact per-write change test —
+    /// the measurement a raw write count misleads about.
     fn watch_hit_json(&self, h: &WatchHit) -> Value {
         let mut e = Map::new();
         e.insert("watch".into(), json!(watch_wire_id(h.watch)));
         e.insert("space".into(), json!(space_name(h.space)));
         e.insert("addr".into(), json!(hex::addr(h.addr)));
         e.insert("value".into(), json!(hex::addr(h.value)));
-        if h.space == WatchSpace::Bus {
-            e.insert("fc".into(), json!(h.fc));
-        } else {
+        let z80 = h.via == WatchVia::Z80;
+        if h.space != WatchSpace::Bus {
             e.insert("old".into(), json!(hex::addr(h.old)));
+        } else if !z80 {
+            e.insert("fc".into(), json!(h.fc));
         }
         e.insert("size".into(), json!(h.size.bytes()));
         e.insert("op".into(), json!(bus_op_name(h.op)));
         e.insert("via".into(), json!(via_name(h.via)));
         e.insert("pc".into(), json!(hex::addr(h.pc)));
-        if let Some((name, disp)) = self.symbol_at(h.pc) {
+        if let Some((name, disp)) = self.symbol_at(h.pc).filter(|_| !z80) {
             e.insert("symbol".into(), json!(name));
             e.insert("symbolDisp".into(), json!(disp));
         }
@@ -9602,6 +9606,7 @@ fn via_name(v: WatchVia) -> &'static str {
         WatchVia::Bus => "bus",
         WatchVia::Direct => "direct",
         WatchVia::Dma => "dma",
+        WatchVia::Z80 => "z80",
     }
 }
 
@@ -9691,13 +9696,20 @@ fn watch_report_json(r: &WatchReport) -> Value {
 
 /// A `first`/`last` coordinate. **Nested**, never spread at the top level of a result: §2.2's envelope stamp
 /// overwrites same-named keys, so a top-level `frame` here would come back as the machine's *now*.
+///
+/// `via` is present **only** as `"z80"` (`$defs/watchStamp.via`, §11.52): a stamp of a Z80 access carries
+/// the Z80's `pc`, and without the marker a client would read it as a 68000 one. Absent means the 68000.
 fn watch_stamp_json(s: &Stamp) -> Value {
-    json!({
+    let mut v = json!({
         "pc": hex::addr(s.pc),
         "frame": s.frame,
         "mclk": s.mclk,
         "seq": s.seq,
-    })
+    });
+    if s.via == WatchVia::Z80 {
+        v["via"] = json!(via_name(s.via));
+    }
+    v
 }
 
 /// One `otherMatches` entry, in the **single** item shape §4 pins: `{name, addr, demangled?}`.

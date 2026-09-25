@@ -2,8 +2,9 @@
 //! registers a recording [`Watchpoints`] on an address, runs it for N frames on a real [`System`] with the
 //! watchpoints attached as the sink, and prints the hit log: every delivered access that touched the watched
 //! range, attributed to the instruction (PC) and master that drove it, with the value and frame, then the
-//! instrument's caveats. Delivered means the 68000's accesses and, of the Z80's, only its FM/PSG register
-//! writes (F-Z80-ACCESSES-UNWATCHED); a caveat says so when the watched range is one the Z80 can reach.
+//! instrument's caveats. Delivered means the 68000's accesses and, of the Z80's, only its YM2612/PSG register
+//! writes — reported at `$A04000-$A04003` / `$A07F11` with the Z80's own PC (contract §11.52) — and a caveat
+//! says so when the watched range is one the Z80 can reach (F-Z80-ACCESSES-UNWATCHED).
 //!
 //! Two spaces (watchpoints v1 + v2):
 //! - `--space bus` (default): the **68000 bus** address space (work RAM, ROM, Z80 RAM, I/O, VDP ports). A hit
@@ -145,6 +146,13 @@ fn main() {
                     master(h.fc),
                     h.fc,
                     h.op,
+                );
+            }
+            // The Z80's YM/PSG register write: its own PC (a Z80 address, not a 68000 one), no fc.
+            WatchVia::Z80 => {
+                println!(
+                    "  #{:<4} f{:<3} ${:06X} ← {:0width$X} by Z80 PC ${:04X}",
+                    h.seq, h.frame, h.addr, h.value, h.pc,
                 );
             }
             // VDP-internal write (v2): old→new + Direct/DMA attribution.

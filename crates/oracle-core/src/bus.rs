@@ -48,9 +48,10 @@ pub enum BusOp {
 /// One memory access, emitted per bus operation. `value` is the value read or (requested to be) written.
 /// `fc` is the 68000 function code that drove the access (5 = supervisor data, 6 = supervisor program,
 /// etc.); a non-68000 master emits `fc = 0`, so instrumentation can attribute every access it is delivered
-/// to its master and space. In the real run loop `fc = 0` comes from the Z80's FM/PSG tap and from the
-/// 68000's `$A07F11` PSG write re-emitted Z80-shaped; a DMA reaches instrumentation as a VDP-internal write
-/// instead, and the Z80's other accesses are not delivered at all (F-Z80-ACCESSES-UNWATCHED).
+/// to its master and space. In the real run loop `fc = 0` comes only from the **sound tap**
+/// ([`BusEventSink::on_sound_tap_at`]): the Z80's FM/PSG register writes, and the 68000's `$A07F11` PSG
+/// write re-emitted Z80-shaped for the audio consumers. A DMA reaches instrumentation as a VDP-internal
+/// write instead, and the Z80's other accesses are not delivered at all (F-Z80-ACCESSES-UNWATCHED).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BusEvent {
     pub op: BusOp,
@@ -166,6 +167,19 @@ pub struct StepRetire {
     pub stall_cycles: u32,
 }
 
+/// Who drove a **sound-tap** write ([`BusEventSink::on_sound_tap_at`]) — the one fact the Z80-shaped
+/// [`BusEvent`] cannot carry, and the one a watch needs (contract §11.52).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundTapMaster {
+    /// The Z80 wrote a YM2612 (`$4000-$4003`) or SN76489 (`$7F11`) register. `pc` is the Z80's program
+    /// counter at the **start** of the writing instruction (`z80::bus::Z80Bus`'s instruction stamp).
+    Z80 { pc: u16 },
+    /// The 68000's own `$A07F11` PSG write through the Z80 window, re-emitted Z80-shaped (addr `$7F11`,
+    /// `fc 0`) so the audio consumers unify both paths at the register file. The 68000's access itself is
+    /// already its own ordinary `$A07F11` event; this is a **copy** for the chip, not a second access.
+    M68kPsgMirror,
+}
+
 /// A consumer of the bus event stream (watchpoints, recorders, decoders, the profiler...).
 pub trait BusEventSink {
     fn on_event(&mut self, event: BusEvent);
@@ -176,6 +190,26 @@ pub trait BusEventSink {
     /// Only a timing-aware sink (the synth AudioSink, SY-4b) overrides it.
     fn on_event_at(&mut self, event: BusEvent, _mclk: u64) {
         self.on_event(event);
+    }
+
+    /// **The sound tap**: a write to a sound-chip register, in the Z80-shaped form the audio consumers
+    /// (the VGM logger, the synth) unify at the register file — `event.addr` is the Z80-side address
+    /// (`$4000-$4003` / `$7F11`), `fc 0`, one byte — plus *who* drove it ([`SoundTapMaster`]).
+    ///
+    /// Called from exactly two sites: the Z80 adapter's FM/PSG write arm (`z80::bus::Z80Bus::write`) and the
+    /// 68000's `$A07F11` window write (`MegaDriveBus`). **The default forwards to
+    /// [`on_event_at`](BusEventSink::on_event_at)**, so every audio consumer, `Vec<BusEvent>` and the null
+    /// sink `()` receive exactly the event they received before this hook existed — the null monomorph is
+    /// the same empty body it always was, and no fetch, RAM or window path calls it.
+    ///
+    /// It exists because the event alone lies to a *watch*: its address names cartridge ROM in the 68000's
+    /// space, `fc 0` claims a non-CPU master, and the step-boundary `pc` a watch would pair it with is the
+    /// 68000's. [`crate::watchpoints::Watchpoints`] overrides it: a `Z80` write becomes a `via: z80` hit at
+    /// its 68000-map address with the Z80's own `pc`, and an `M68kPsgMirror` copy is not offered at all
+    /// (contract §6, *The Z80 and the watch surface*, §11.52). A forwarding combinator must forward this
+    /// hook **as itself** — letting it fall to the default would hand its inner watch the raw event.
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, _master: SoundTapMaster) {
+        self.on_event_at(event, mclk);
     }
 
     /// Called by the sink-generic run loop immediately before each CPU step, stamping the PC of the
@@ -396,6 +430,9 @@ impl<S: BusEventSink + ?Sized> BusEventSink for &mut S {
     fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
         (**self).on_event_at(event, mclk);
     }
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, master: SoundTapMaster) {
+        (**self).on_sound_tap_at(event, mclk, master);
+    }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         (**self).on_step_boundary(pc, frame);
     }
@@ -437,6 +474,11 @@ impl<S: BusEventSink> BusEventSink for Option<S> {
     fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
         if let Some(s) = self {
             s.on_event_at(event, mclk);
+        }
+    }
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, master: SoundTapMaster) {
+        if let Some(s) = self {
+            s.on_sound_tap_at(event, mclk, master);
         }
     }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
@@ -503,6 +545,9 @@ impl<S: BusEventSink> BusEventSink for Observe<S> {
     }
     fn on_event_at(&mut self, event: BusEvent, mclk: u64) {
         self.0.on_event_at(event, mclk);
+    }
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, master: SoundTapMaster) {
+        self.0.on_sound_tap_at(event, mclk, master);
     }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.0.on_step_boundary(pc, frame);
@@ -575,6 +620,10 @@ impl<A: BusEventSink, B: BusEventSink> BusEventSink for Fanout<A, B> {
         // override) whether it wants the mclk or the plain `on_event` forward.
         self.a.on_event_at(event, mclk);
         self.b.on_event_at(event, mclk);
+    }
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, master: SoundTapMaster) {
+        self.a.on_sound_tap_at(event, mclk, master);
+        self.b.on_sound_tap_at(event, mclk, master);
     }
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
         self.a.on_step_boundary(pc, frame);
@@ -1260,7 +1309,9 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
             //                  `Z80WindowBankswitch` is reached from both buses);
             //   $7F11       -> the PSG port through the mirror: tap the Z80-side-shaped BusEvent into the
             //                  sink (addr $7F11, fc 0 — the same event the Z80's own write emits, so the
-            //                  VGM logger/synth unify the two paths at the register-file level);
+            //                  VGM logger/synth unify the two paths at the register-file level). It goes
+            //                  through the sound tap as `M68kPsgMirror`, so a watch never sees this copy:
+            //                  the 68000's access is its own `$A07F11` event (contract §11.52);
             //   the rest of $6100-$7FFF (unused / write-only VDP mirror) drops, matching z80/bus.rs.
             0xA0_0000..=0xA0_FFFF => {
                 let z = (a & 0x7FFF) as u16;
@@ -1270,7 +1321,17 @@ impl<'a, S: BusEventSink> MegaDriveBus<'a, S> {
                     match z {
                         0x0000..=0x3FFF => self.z80_ram[z as usize & (Z80_RAM_SIZE - 1)] = byte,
                         0x6000..=0x60FF => crate::z80::bus::bank_latch_tick(self.z80_bank, byte),
-                        0x7F11 => self.emit(BusOp::Write, 0, 0x7F11, Size::Byte, byte as u32),
+                        0x7F11 => self.sink.on_sound_tap_at(
+                            BusEvent {
+                                op: BusOp::Write,
+                                fc: 0,
+                                addr: 0x7F11,
+                                size: Size::Byte,
+                                value: byte as u32,
+                            },
+                            self.now_mclk,
+                            SoundTapMaster::M68kPsgMirror,
+                        ),
                         _ => {}
                     }
                 }

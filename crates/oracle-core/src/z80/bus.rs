@@ -29,7 +29,7 @@
 //! | `$8000-$FFFF` | 68k bank window | **live** — `(bank << 15) \| (addr & 0x7FFF)` → ROM / work RAM / Z80 RAM |
 
 use super::Z80Io;
-use crate::bus::{BusEvent, BusEventSink, BusOp, CartBanks, Size, Z80_RAM_SIZE};
+use crate::bus::{BusEvent, BusEventSink, BusOp, CartBanks, Size, SoundTapMaster, Z80_RAM_SIZE};
 use crate::system::RAM_SIZE;
 use crate::vdp::Vdp;
 use crate::ym2612::Ym2612;
@@ -115,6 +115,13 @@ pub struct Z80Bus<'a, S: BusEventSink> {
     /// The bus-event sink FM/PSG writes tap into (Phase RT). Threaded down from the run loop, monomorphized —
     /// `()` is the no-op hot path, `Vec<BusEvent>` records.
     sink: &'a mut S,
+    /// The Z80's PC at the **start** of the instruction this adapter serves (set by the run loop through
+    /// [`Z80Bus::at_instruction`]; `0` when a caller never set it). Read by nothing but the FM/PSG tap arm,
+    /// which hands it to the sink as [`SoundTapMaster::Z80`]'s `pc` — the contract's "`pc` is the Z80's
+    /// program counter at the start of the instruction that wrote" (§6, §11.52). One `Z80::step` is one
+    /// instruction or one interrupt acceptance, and an acceptance writes no sound register, so the PC
+    /// before the step is exactly that instruction's.
+    instruction_pc: u16,
 }
 
 impl<'a, S: BusEventSink> Z80Bus<'a, S> {
@@ -143,7 +150,15 @@ impl<'a, S: BusEventSink> Z80Bus<'a, S> {
             vdp,
             now_mclk,
             sink,
+            instruction_pc: 0,
         }
+    }
+
+    /// Stamp the Z80 PC of the instruction about to run on this adapter (the run loop's `z80.pc` before
+    /// `z80.step`). Only the FM/PSG tap reads it (the `instruction_pc` field says why it is exact).
+    pub fn at_instruction(mut self, pc: u16) -> Self {
+        self.instruction_pc = pc;
+        self
     }
 
     /// Translate a `$8000-$FFFF` window address to its absolute 68000 address: the 9-bit bank selects the
@@ -232,13 +247,17 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
                 self.write_window(a, value);
             }
             // YM2612 FM ($4000-$4003) / SN76489 PSG ($7F11): tap the register write into the bus-event stream
-            // (Phase RT — the VGM logger consumes it). `fc = 0` because the Z80 is a non-68000 master (the
-            // DMA/other-master convention in crate::bus). The RAW Z80-side address ($4000 / $7F11) is emitted,
-            // NOT the 68k FM window ($A04000): a consumer unifies the two at the register-file level. FM writes
-            // ADDITIONALLY drive the timer model (the tap is for the VGM logger; the timer update is what makes
-            // the driver's Timer-A overflow poll fire — docs/2026-07-22-fm-timer-design.md). PSG has no timer.
+            // through the SOUND TAP (Phase RT — the VGM logger and the synth consume it). The event is the
+            // Z80-shaped one the audio consumers unify at the register-file level: the RAW Z80-side address
+            // ($4000 / $7F11), `fc = 0`, one byte — the default hook forwards exactly that to `on_event_at`,
+            // so they see what they always saw. The hook ALSO carries who wrote it and the Z80's own PC,
+            // which is what lets a watch report it truthfully (at $A04000-3 / $A07F11, via z80) instead of
+            // as a cartridge-ROM write (contract §6, §11.52). This arm is the only Z80 path that reaches a
+            // sink; fetches, reads, RAM and window traffic gain nothing. FM writes ADDITIONALLY drive the
+            // timer model (the timer update is what makes the driver's Timer-A overflow poll fire —
+            // docs/2026-07-22-fm-timer-design.md). PSG has no timer.
             0x4000..=0x4003 | 0x7F11 => {
-                self.sink.on_event_at(
+                self.sink.on_sound_tap_at(
                     BusEvent {
                         op: BusOp::Write,
                         fc: 0,
@@ -247,6 +266,9 @@ impl<S: BusEventSink> Z80Io for Z80Bus<'_, S> {
                         value: value as u32,
                     },
                     self.now_mclk,
+                    SoundTapMaster::Z80 {
+                        pc: self.instruction_pc,
+                    },
                 );
                 if let 0x4000..=0x4003 = addr {
                     self.fm.write_port(addr, value, self.now_mclk);

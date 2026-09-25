@@ -4902,6 +4902,407 @@
         ]
       },
       "why": "[CR-V item B] RED under item B only - the shared $defs enum refuses a non-target on this method too."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H1): a Z80 YM write, reported at its 68000-map address with via z80, the Z80's pc, and no fc, symbol or old."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7,
+            "fc": 0
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H2): a Z80 hit carries no 68000 function code."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7,
+            "symbol": "Zdrv",
+            "symbolDisp": 0
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H3): a symbol resolves against the 68000 listing, never a Z80 pc."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "cram",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7,
+            "old": "0x00"
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H4): a Z80 hit is a bus hit."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04000",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "fc": 5,
+            "via": "bus",
+            "pc": "0x00001A40",
+            "frame": 12,
+            "mclk": 4455000,
+            "seq": 6
+          },
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7
+          },
+          {
+            "watch": "w-2",
+            "space": "cram",
+            "addr": "0x0002",
+            "value": "0x0EEE",
+            "old": "0x0000",
+            "size": 2,
+            "op": "write",
+            "via": "direct",
+            "pc": "0x00001A48",
+            "frame": 12,
+            "mclk": 4455900,
+            "seq": 8
+          }
+        ],
+        "total": 3,
+        "returned": 3,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 3,
+        "matched": 3
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H5): 68000, Z80 and VDP-internal hits share one reply, each under its own presence rule."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04000",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "bus",
+            "pc": "0x00001A40",
+            "frame": 12,
+            "mclk": 4455000,
+            "seq": 6
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H6): a 68000 bus hit still requires fc; regression guard."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7,
+            "old": "0x00"
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H7): a bus hit has no prior value, the Z80's included."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04001",
+            "value": "0x2B",
+            "size": 1,
+            "op": "write",
+            "via": "Z80",
+            "pc": "0x0123",
+            "frame": 12,
+            "mclk": 4455660,
+            "seq": 7
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H8): the member is lower-case z80."
+    },
+    {
+      "method": "emulator/watchpoint_hits",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "hits": [
+          {
+            "watch": "w-2",
+            "space": "cram",
+            "addr": "0x0002",
+            "value": "0x0EEE",
+            "old": "0x0000",
+            "size": 2,
+            "op": "write",
+            "via": "z80",
+            "pc": "0x00001A48",
+            "frame": 12,
+            "mclk": 4455900,
+            "seq": 8
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "dropped": 0,
+        "seen": 1,
+        "matched": 1
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 H9): via z80 on a VDP-internal space is refused."
+    },
+    {
+      "method": "emulator/watchpoint_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "watches": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04000",
+            "len": 4,
+            "op": "write",
+            "mode": "record",
+            "matched": 1,
+            "first": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7,
+              "via": "z80"
+            },
+            "last": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7,
+              "via": "z80"
+            }
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 L1): a stamp of a Z80 access carries via z80, so its pc is not read as a 68000 pc."
+    },
+    {
+      "method": "emulator/watchpoint_list",
+      "kind": "result",
+      "expect": "fail",
+      "doc": {
+        "watches": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04000",
+            "len": 4,
+            "op": "write",
+            "mode": "record",
+            "matched": 1,
+            "first": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7,
+              "via": "bus"
+            },
+            "last": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7,
+              "via": "bus"
+            }
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 L2): watchStamp.via is only ever z80; absence means the 68000."
+    },
+    {
+      "method": "emulator/watchpoint_list",
+      "kind": "result",
+      "expect": "pass",
+      "doc": {
+        "watches": [
+          {
+            "watch": "w-1",
+            "space": "bus",
+            "addr": "0x00A04000",
+            "len": 4,
+            "op": "write",
+            "mode": "record",
+            "matched": 1,
+            "first": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7
+            },
+            "last": {
+              "pc": "0x0123",
+              "frame": 12,
+              "mclk": 4455660,
+              "seq": 7
+            }
+          }
+        ],
+        "total": 1,
+        "returned": 1,
+        "truncated": false
+      },
+      "why": "§11.52 (oracle docs/2026-09-25-z80-watch-cr.md §5.6 L3): a 68000 stamp is unchanged; regression guard."
     }
   ],
   "specExamples": [

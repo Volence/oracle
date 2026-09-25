@@ -10,7 +10,7 @@ use crate::overlay::{self, ACCENT, INFO};
 use crate::present::Rect;
 use crate::{font, MAX_SYMBOL_DISPLACEMENT};
 use oracle_core::symbols::SymbolTable;
-use oracle_core::watchpoints::{WatchHit, WatchSpace, Watchpoints};
+use oracle_core::watchpoints::{WatchHit, WatchSpace, WatchVia, Watchpoints};
 
 /// How many hits the strip shows. Four fits under the picture without eating it; the full log is
 /// still one `W` away.
@@ -48,10 +48,16 @@ fn space_name(s: WatchSpace) -> &'static str {
 /// Private: `dump_hits` formats its own, wider line (it carries `seq` and `via` too), so this is
 /// the strip's own spelling and has no second caller to answer to.
 fn line(h: &WatchHit, symbols: Option<&SymbolTable>) -> String {
-    let at = symbols
-        .and_then(|t| t.resolve_within(h.pc, MAX_SYMBOL_DISPLACEMENT))
-        .map(|r| r.to_string())
-        .unwrap_or_else(|| format!("${:06X}", h.pc));
+    // A Z80 hit's pc is the Z80's (contract §6, §11.52): never resolved against the 68000 listing, and
+    // marked so it cannot be read as a 68000 address.
+    let at = if h.via == WatchVia::Z80 {
+        format!("z80:${:04X}", h.pc)
+    } else {
+        symbols
+            .and_then(|t| t.resolve_within(h.pc, MAX_SYMBOL_DISPLACEMENT))
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| format!("${:06X}", h.pc))
+    };
     format!(
         "w{} {} ${:04X} {:X}->{:X} @f{} {}",
         h.watch.0,
@@ -158,7 +164,7 @@ pub fn draw(c: &mut font::Canvas, area: Rect, px: usize, t: &Ticker) {
 mod tests {
     use super::*;
     use oracle_core::bus::{BusEvent, BusEventSink, BusOp, Size};
-    use oracle_core::watchpoints::{WatchId, WatchOp, WatchVia};
+    use oracle_core::watchpoints::{WatchId, WatchOp};
 
     fn hit(seq: u64, addr: u32, old: u32, value: u32) -> WatchHit {
         WatchHit {

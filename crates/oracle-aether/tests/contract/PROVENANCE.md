@@ -61,27 +61,51 @@ pin itself; see [How the freshness gate resolves](#how-the-freshness-gate-resolv
 <!-- The six lines below are PARSED by tests/schema_conformance.rs. Keep the exact `key = value`
      shape; the test fails loudly (not silently) if a marker is missing or malformed. -->
 
-    pin.revision = 265efaa78b7ecf3a2ad014ce04a3faab79d7649d
-    pin.blob     = e18e65500e57a19e5fb6e4ecd8cc6a15c220a55b
-    pin.bytes    = 371964
+    pin.revision = 616c20268594fe418527fd7c6805e8b448bacba4
+    pin.blob     = 0fa047c9aed3d40deaa10271d019629809f2357a
+    pin.bytes    = 374656
 
-    pin.vectors.revision = 265efaa78b7ecf3a2ad014ce04a3faab79d7649d
-    pin.vectors.blob     = a6bd0fb3ff4409a039fa707fcb26d69c13df3cd1
-    pin.vectors.bytes    = 155581
+    pin.vectors.revision = 616c20268594fe418527fd7c6805e8b448bacba4
+    pin.vectors.blob     = 136b68cb236039596790c4b5fd8c54cdd6e5027e
+    pin.vectors.bytes    = 165887
 
 ## Current copy — the schema
 
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/bus-protocol.schema.json` |
-| Contract repo revision | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`** (2026-09-17) — the §11.50 adoption commit, *"CR-W lands: §11.50, the §6 panel bullets, §8 item 31, and the schema's panel kind"*. The per-path recipe (`git log -1 --format=%H origin/main -- <path>`, empyrean `origin/main` at **`0f7f1e9a`**, a tip that wrote neither file) answered **`265efaa7`** for the **schema** path and **`0937079`** for the **vectors** path, which did not move; both pins therefore carry `265efaa7`, the revision this copy was TAKEN FROM, and `git rev-parse 265efaa7:contract/schema/tests/vectors.json` resolves to the vectors blob we hold (`a6bd0fb3`, the object `0937079` left there). `git merge-base --is-ancestor 265efaa7 origin/main` was **run** (exit 0); `git rev-parse 265efaa7:<path>` resolves the two paths to `e18e6550` and `a6bd0fb3`, which are what `git hash-object` returns on the written files. **70** method fragments (the `methods` object carries 71 keys, one a `$comment`); **21** `$defs` (+1, `screenTextKind`); **5** event fragments — every figure **re-derived by parsing this copy**. The delta from the copy this replaces is **15 leaf paths added, 5 removed, 4 values changed**, derived by flattening both copies to leaf paths (3116 → 3126) and differencing. **Exactly one fragment is touched** (`methods["emulator/screen_text"]`) plus the new `$defs/screenTextKind`; `$schema`, `$id`, `title`, `description`, `anyMessage`, `handshake` and `events` are byte-identical as parsed structures. |
-| Last commit that touched the schema | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`**, the pin itself: the adoption commit wrote `protocol.md` and the schema together (it wrote no vectors). |
-| Git blob | `e18e65500e57a19e5fb6e4ecd8cc6a15c220a55b` |
-| SHA-256 | `f976053aa4b839763c8485a4a302a47c983922db33ef608d2863ee7c4008cb5b` |
-| Bytes | 371964 |
-| Vendored on | 2026-09-17 |
+| Contract repo revision | **`616c20268594fe418527fd7c6805e8b448bacba4`** (2026-09-25) — the §11.52 adoption commit, *"contract §11.52: Z80 sound-chip writes on the watch surface at their 68000-map address, via z80 (oracle F-Z80-ACCESSES-UNWATCHED, option C)"*. The per-path recipe (`git log -1 --format=%H origin/main -- <path>`, empyrean `origin/main` at **`1694e538`**, a tip that wrote neither file) answered **`616c2026`** for **both** paths, because this adoption wrote the schema and the vectors together; `git log 616c2026..origin/main -- contract/schema/` is empty. `git merge-base --is-ancestor 616c2026 origin/main` was **run** (exit 0); `git rev-parse 616c2026:<path>` resolves the two paths to `0fa047c9` and `136b68cb`, which are what `git hash-object` returns on the written files. **70** method fragments (the `methods` object carries 71 keys, one a `$comment`); **21** `$defs`; **5** event fragments (`events` carries 6 keys, one a `$comment`) — every figure **re-derived by parsing this copy**. The delta from the copy this replaces is **14 leaf paths added, 1 removed, 7 values changed**, derived by flattening both copies to leaf paths (3128 → 3141, counting an empty object or array as one leaf; the previous row's 3116 → 3126 was taken with a flattener that did not, so the two totals are not comparable, and the add/remove/change counts are) and differencing. **Three fragments are touched** (`methods["emulator/watchpoint_add"]`, `["emulator/watchpoint_list"]`, `["emulator/watchpoint_hits"]`) plus `$defs/watchStamp`; `$schema`, `$id`, `title`, `description`, `anyMessage`, `handshake` and `events` are identical as parsed structures. |
+| Last commit that touched the schema | **`616c20268594fe418527fd7c6805e8b448bacba4`**, the pin itself: the adoption commit wrote `protocol.md`, the schema and the vectors together. |
+| Git blob | `0fa047c9aed3d40deaa10271d019629809f2357a` |
+| SHA-256 | `f5327bc138acd2f44d98d717853a25392b5a75c8db34ed111012455d5f70c7f2` |
+| Bytes | 374656 |
+| Vendored on | 2026-09-25 |
 
-> **⚑ This copy (§11.50, CR-W): the `panel` surface kind, and the serve lands in the same commit.**
+> **⚑ This copy (§11.52, F-Z80-ACCESSES-UNWATCHED option C): the Z80's YM/PSG writes on the watch surface,
+> and the tap-site change lands in the same commit.** The 14 added leaves are `$defs/watchStamp.via` (2:
+> `const "z80"` and a `description`), the hit's `via` enum member `z80` (1), and two new `allOf` members on
+> the hit item (11): `allOf/1`, *bus and not z80 requires `fc`* (`$comment`, the two `if` consts, the
+> `then.required` entry), and `allOf/2`, *z80 requires `space: bus` and forbids `fc`, `symbol` and
+> `symbolDisp`* (`$comment`, the `if` const and `required`, the `then` const, three `not.anyOf` entries).
+> The 1 removed is `allOf/0`'s `then.required: ["fc"]`, which **moved** into `allOf/1` rather than
+> vanishing — §11.52's *"the `bus` hit's presence conditional is split in three"*. The 7 changed values are
+> all prose: `watchpoint_add`'s `space` and `stopAfter`, the hit's `fc`, `via`, `pc` and `mclk`, and the
+> census `key` (`3=z80`).
+>
+> **What the added leaves mean for validation force.** A `via: "z80"` hit carrying `fc`, `symbol`,
+> `symbolDisp` or `old`, or sitting in a VDP space, is refused; a 68000 bus hit without `fc` is still
+> refused (H6); a `watchStamp.via` other than `"z80"` is refused (L2). The enum widening is **not additive
+> for a stale validator**: a copy closed over `bus`/`direct`/`dma` refuses every hit this server now emits
+> for a Z80 write.
+>
+> **There is no red-free ordering, in either direction.** Serve without these bytes and every wire test
+> that reads a Z80 hit is refused by `Client::recv` (reasoned from the old fragment rather than run: its
+> `via` enum is closed over `bus`/`direct`/`dma`, and its `allOf/0` requires `fc` on every bus hit). These bytes without the serve leave today's replies valid
+> but make the new `tests/watchpoints.rs` Z80 rows red on behaviour. So the re-vendor and the tap-site
+> change are one commit — the hub's adoption condition, verbatim — and aeon moves its `YM_A0..A3`
+> constants in the same landing window (§11.52), because its L0 control goes loud on the old addresses.
+
+> **⚑ (The previous copy, §11.50, CR-W.) The `panel` surface kind, and the serve landed in the same commit.**
 > The 15 added leaves are `$defs/screenTextKind` (7: six enum members and a `description`), the surface
 > item's `kind` `$ref` (1), the `panel` key (3: `type`, `minLength`, `description`) and the
 > `if`/`then`/`else` that binds them (4). The 5 removed are the surface item's old inline `kind` enum,
@@ -285,11 +309,18 @@ until the vectors table describes `c5638e6e`, not the current copy.)*
 | | |
 |---|---|
 | Source | `empyrean/contract/schema/tests/vectors.json` |
-| Contract repo revision | **`265efaa78b7ecf3a2ad014ce04a3faab79d7649d`** (2026-09-17) — the same revision as the schema's pin, which step 0 requires, and **these bytes did not move**: `git rev-parse 265efaa7:contract/schema/tests/vectors.json` answers `a6bd0fb3`, the object `0937079` left there, because §11.50 amended a fragment and added no case. Re-copied from `265efaa7`'s object store rather than left alone, so the file is provably the object at the revision both pins name. **313 cases**, of which **187** are `expect: "fail"` and **126** `expect: "pass"`; naming **45** distinct methods; **14** carry `group: "events"`. Every figure re-derived by parsing the bytes written in this commit. *(What the row said for the previous pin, `0937079`, follows.)* **313 cases** (up from 295), of which **187** are `expect: "fail"` and **126** `expect: "pass"`; naming **45** distinct methods (up from 42: `emulator/state_hash`, `emulator/screenshot` and `emulator/scanlines` had no vectors before, and the 18 new cases name only those three); **14** carry `group: "events"`, unchanged. |
-| Git blob | `a6bd0fb3ff4409a039fa707fcb26d69c13df3cd1` |
-| SHA-256 | `9f944939a3828d15712e7e2582699b3f0cde6b07c229b8515db236a62f67978e` |
-| Bytes | 155581 |
-| Vendored on | 2026-09-17 |
+| Contract repo revision | **`616c20268594fe418527fd7c6805e8b448bacba4`** (2026-09-25) — the same revision as the schema's pin, which step 0 requires, and **these bytes moved**: §11.52 added twelve cases (the CR's H1–H9 and L1–L3), all appended after the existing 313 with none removed or reordered, which was checked by comparing each old case to its new position as parsed structures. **325 cases**, of which **195** are `expect: "fail"` and **130** `expect: "pass"` (+8 fail, +4 pass); naming **47** distinct methods (up from 45: `emulator/watchpoint_hits` has nine new cases and `emulator/watchpoint_list` three, and neither had a vector before); **14** carry `group: "events"`, unchanged. Every figure re-derived by parsing the bytes written in this commit. *(What the row said for the previous pin, `265efaa7`: 313 cases, 187 fail, 126 pass, 45 methods, 14 events.)* |
+| Git blob | `136b68cb236039596790c4b5fd8c54cdd6e5027e` |
+| SHA-256 | `5eb0aa959e356aad94565a870f11bfae712382f3fc684726a68ef1eb596742b8` |
+| Bytes | 165887 |
+| Vendored on | 2026-09-25 |
+
+> **⚑ The twelve §11.52 vectors are the red-to-green evidence for this serve, and they judge documents,
+> not replies.** H1, H5 and L1 are the passes a truthful Z80 hit and stamp must meet; H2–H4 and H7–H9 are
+> refusals of a Z80 hit carrying `fc`, a symbol, `old`, a VDP space or a capitalised member; H6 and L3
+> are the regression guards for the 68000's own hit and stamp; L2 refuses `watchStamp.via: "bus"`.
+> `schema_conformance::the_contracts_own_vectors_pass_and_fail_exactly_as_declared` runs them; the
+> behaviour they describe is asserted against live replies in `tests/watchpoints.rs`.
 
 > **⚑ Again these bytes did not move, and again only the pin's revision did.** `git rev-parse
 > 59d29ac:contract/schema/tests/vectors.json` answers `e045fac1fdd32624344bab20f062acf193d3b3d0`, which is

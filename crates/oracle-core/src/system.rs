@@ -1938,7 +1938,10 @@ impl System {
                     vdp,
                     *z80_frontier_mclk,
                     sink,
-                );
+                )
+                // The PC the step's instruction starts at: the FM/PSG tap reports it as the writing
+                // instruction's Z80 pc (contract §6, §11.52). `now_mclk` above is the same instant's clock.
+                .at_instruction(z80.pc());
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
