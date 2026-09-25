@@ -141,6 +141,17 @@ cargo clippy --all-targets -- -D warnings
 cargo test --workspace        # includes the SST sweep; it takes minutes, it is not hung
 ```
 
+**Reading CI's verdict for a commit** — `tools/ci-verdict.py <sha>`, never `gh run list` by eye. It
+resolves a short SHA to the full one (GitHub's `head_sha` filter answers a short SHA with a silent
+zero), derives which workflows a push must have run from `.github/workflows/` at that SHA, and its
+exit status is the verdict: `0` every push run and job concluded `success`; `1` something concluded
+anything else (`cancelled` included), named with its run id; `2` still running; `3` no run for this
+SHA — refused next to a positive control that proves the query fires, with the push tip that did
+run named and `git diff --stat <sha> <tip> -- crates/` printed, because a multi-commit push runs CI
+on its tip only; `4` the question could not be asked. `--wait` polls to a final verdict with a
+bounded `--deadline`. Its offline proof is `tools/run_ci_verdict_tests.sh` (also `tools/land.sh`
+G0c).
+
 ### Where a ROM comes from
 
 **This repo ships one.** `fixtures/aeon/s4.debug.bin` is a committed, bootable Aeon debug build, with

@@ -1,0 +1,20 @@
+{
+ "total_count": 1,
+ "workflow_runs": [
+  {
+   "conclusion": "cancelled",
+   "created_at": "2026-09-19T15:26:44Z",
+   "event": "push",
+   "head_branch": "main",
+   "head_sha": "2414223ef5104a3c08859e80e7312f851a68b552",
+   "html_url": "https://github.com/Volence/oracle/actions/runs/35451829729",
+   "id": 35451829729,
+   "name": "CI",
+   "path": ".github/workflows/ci.yml",
+   "run_attempt": 1,
+   "status": "completed",
+   "updated_at": "2026-09-19T15:47:10Z",
+   "workflow_id": 313973439
+  }
+ ]
+}

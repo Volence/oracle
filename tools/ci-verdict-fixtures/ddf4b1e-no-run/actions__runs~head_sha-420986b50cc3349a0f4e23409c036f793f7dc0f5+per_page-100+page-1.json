@@ -1,0 +1,20 @@
+{
+ "total_count": 1,
+ "workflow_runs": [
+  {
+   "conclusion": null,
+   "created_at": "2026-09-25T07:06:41Z",
+   "event": "push",
+   "head_branch": "main",
+   "head_sha": "420986b50cc3349a0f4e23409c036f793f7dc0f5",
+   "html_url": "https://github.com/Volence/oracle/actions/runs/36106013467",
+   "id": 36106013467,
+   "name": "CI",
+   "path": ".github/workflows/ci.yml",
+   "run_attempt": 1,
+   "status": "in_progress",
+   "updated_at": "2026-09-25T07:07:59Z",
+   "workflow_id": 313973439
+  }
+ ]
+}

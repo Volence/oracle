@@ -1,0 +1,329 @@
+{
+ "jobs": [
+  {
+   "completed_at": "2026-09-19T16:01:53Z",
+   "conclusion": "success",
+   "id": 105924803875,
+   "name": "Determinism gate",
+   "run_attempt": 1,
+   "run_id": 35453569843,
+   "started_at": "2026-09-19T16:00:35Z",
+   "status": "completed",
+   "steps": [
+    {
+     "completed_at": "2026-09-19T16:00:36Z",
+     "conclusion": "success",
+     "name": "Set up job",
+     "number": 1,
+     "started_at": "2026-09-19T16:00:35Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:00:38Z",
+     "conclusion": "success",
+     "name": "Run actions/checkout@v4",
+     "number": 2,
+     "started_at": "2026-09-19T16:00:36Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:00:38Z",
+     "conclusion": "success",
+     "name": "Read the declared Rust floor",
+     "number": 3,
+     "started_at": "2026-09-19T16:00:38Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:00:46Z",
+     "conclusion": "success",
+     "name": "Run dtolnay/rust-toolchain@master",
+     "number": 4,
+     "started_at": "2026-09-19T16:00:38Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:00:49Z",
+     "conclusion": "success",
+     "name": "Run Swatinem/rust-cache@v2",
+     "number": 5,
+     "started_at": "2026-09-19T16:00:46Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:51Z",
+     "conclusion": "success",
+     "name": "Determinism gate + invariant proptests",
+     "number": 6,
+     "started_at": "2026-09-19T16:00:49Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:51Z",
+     "conclusion": "success",
+     "name": "Post Run Swatinem/rust-cache@v2",
+     "number": 11,
+     "started_at": "2026-09-19T16:01:51Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:52Z",
+     "conclusion": "success",
+     "name": "Post Run actions/checkout@v4",
+     "number": 12,
+     "started_at": "2026-09-19T16:01:51Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:52Z",
+     "conclusion": "success",
+     "name": "Complete job",
+     "number": 13,
+     "started_at": "2026-09-19T16:01:52Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "completed_at": "2026-09-19T16:02:20Z",
+   "conclusion": "success",
+   "id": 105925001133,
+   "name": "Replay playthroughs (release)",
+   "run_attempt": 1,
+   "run_id": 35453569843,
+   "started_at": "2026-09-19T16:01:55Z",
+   "status": "completed",
+   "steps": [
+    {
+     "completed_at": "2026-09-19T16:01:56Z",
+     "conclusion": "success",
+     "name": "Set up job",
+     "number": 1,
+     "started_at": "2026-09-19T16:01:55Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:58Z",
+     "conclusion": "success",
+     "name": "Run actions/checkout@v4",
+     "number": 2,
+     "started_at": "2026-09-19T16:01:56Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:01:58Z",
+     "conclusion": "success",
+     "name": "Read the declared Rust floor",
+     "number": 3,
+     "started_at": "2026-09-19T16:01:58Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:05Z",
+     "conclusion": "success",
+     "name": "Run dtolnay/rust-toolchain@master",
+     "number": 4,
+     "started_at": "2026-09-19T16:01:58Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:07Z",
+     "conclusion": "success",
+     "name": "Run Swatinem/rust-cache@v2",
+     "number": 5,
+     "started_at": "2026-09-19T16:02:05Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:19Z",
+     "conclusion": "success",
+     "name": "Full replay playthroughs against the frozen pin",
+     "number": 6,
+     "started_at": "2026-09-19T16:02:07Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:19Z",
+     "conclusion": "success",
+     "name": "Post Run Swatinem/rust-cache@v2",
+     "number": 11,
+     "started_at": "2026-09-19T16:02:19Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:19Z",
+     "conclusion": "success",
+     "name": "Post Run actions/checkout@v4",
+     "number": 12,
+     "started_at": "2026-09-19T16:02:19Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:19Z",
+     "conclusion": "success",
+     "name": "Complete job",
+     "number": 13,
+     "started_at": "2026-09-19T16:02:19Z",
+     "status": "completed"
+    }
+   ]
+  },
+  {
+   "completed_at": "2026-09-19T16:44:56Z",
+   "conclusion": "success",
+   "id": 105925001159,
+   "name": "Build, test, clippy, fmt",
+   "run_attempt": 1,
+   "run_id": 35453569843,
+   "started_at": "2026-09-19T16:01:56Z",
+   "status": "completed",
+   "steps": [
+    {
+     "completed_at": "2026-09-19T16:01:59Z",
+     "conclusion": "success",
+     "name": "Set up job",
+     "number": 1,
+     "started_at": "2026-09-19T16:01:57Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:01Z",
+     "conclusion": "success",
+     "name": "Run actions/checkout@v4",
+     "number": 2,
+     "started_at": "2026-09-19T16:01:59Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:01Z",
+     "conclusion": "success",
+     "name": "Read the declared Rust floor",
+     "number": 3,
+     "started_at": "2026-09-19T16:02:01Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:10Z",
+     "conclusion": "success",
+     "name": "Run dtolnay/rust-toolchain@master",
+     "number": 4,
+     "started_at": "2026-09-19T16:02:01Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:28Z",
+     "conclusion": "success",
+     "name": "Run Swatinem/rust-cache@v2",
+     "number": 5,
+     "started_at": "2026-09-19T16:02:10Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:43Z",
+     "conclusion": "success",
+     "name": "System libraries for the frontend/player build (alsa, udev)",
+     "number": 6,
+     "started_at": "2026-09-19T16:02:28Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:02:45Z",
+     "conclusion": "success",
+     "name": "Format",
+     "number": 7,
+     "started_at": "2026-09-19T16:02:43Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:03Z",
+     "conclusion": "success",
+     "name": "Clippy (deny warnings)",
+     "number": 8,
+     "started_at": "2026-09-19T16:02:45Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:14Z",
+     "conclusion": "success",
+     "name": "Restore vendored corpora",
+     "number": 9,
+     "started_at": "2026-09-19T16:03:03Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:14Z",
+     "conclusion": "skipped",
+     "name": "Fetch vendored corpora (cache miss only)",
+     "number": 10,
+     "started_at": "2026-09-19T16:03:14Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:21Z",
+     "conclusion": "success",
+     "name": "Verify vendored corpora against their pinned manifests",
+     "number": 11,
+     "started_at": "2026-09-19T16:03:14Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:21Z",
+     "conclusion": "skipped",
+     "name": "Save vendored corpora",
+     "number": 12,
+     "started_at": "2026-09-19T16:03:21Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:24Z",
+     "conclusion": "success",
+     "name": "Name the frozen aeon pin",
+     "number": 13,
+     "started_at": "2026-09-19T16:03:21Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:03:29Z",
+     "conclusion": "success",
+     "name": "Corpus guards (name them in the log)",
+     "number": 14,
+     "started_at": "2026-09-19T16:03:24Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:44:52Z",
+     "conclusion": "success",
+     "name": "Test",
+     "number": 15,
+     "started_at": "2026-09-19T16:03:29Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:44:52Z",
+     "conclusion": "success",
+     "name": "Post Run Swatinem/rust-cache@v2",
+     "number": 29,
+     "started_at": "2026-09-19T16:44:52Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:44:52Z",
+     "conclusion": "success",
+     "name": "Post Run actions/checkout@v4",
+     "number": 30,
+     "started_at": "2026-09-19T16:44:52Z",
+     "status": "completed"
+    },
+    {
+     "completed_at": "2026-09-19T16:44:52Z",
+     "conclusion": "success",
+     "name": "Complete job",
+     "number": 31,
+     "started_at": "2026-09-19T16:44:52Z",
+     "status": "completed"
+    }
+   ]
+  }
+ ],
+ "total_count": 3
+}
