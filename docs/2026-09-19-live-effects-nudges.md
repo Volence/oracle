@@ -201,6 +201,11 @@ not `band_record_*` (the strided one). Every field this panel offers is inside t
 is why they all resolve; the capability tails publish no equates at all. That is why the stride comes from
 the span and not from `band_entry_len`.
 
+**Update 2026-09-25 (PARALLAX-STRIDE-EQUATE):** aeon `6e1a4f80` now publishes the record size itself,
+`pub equ band_record_len = sizeof(band_record)` (`$20` on s4, `$0A` on demo). The panel reads it as the stride
+when the listing carries it, keeps the span derivation above as a cross-check (a disagreement refuses,
+naming both numbers), and falls back to the derivation, saying so on screen, for a listing that predates it.
+
 ---
 
 ## 4. ⚑ FOR AEON AND AURORA — which of these fields are live at runtime
@@ -275,6 +280,7 @@ way this one is. **oracle is not asking for it, only reporting that it is what t
 so on screen rather than leaving the two field names looking forgotten. A second ask, much smaller, would
 make the derivation in §3 unnecessary: publish a `band_record_len` equate (or `PARALLAX_SCRATCH_BYTES`)
 alongside the `band_entry_*` rows, and a client could resolve the stride instead of deriving it.
+*(Answered 2026-09-25: aeon `6e1a4f80` publishes `band_record_len`; see the §3 update.)*
 
 ---
 
