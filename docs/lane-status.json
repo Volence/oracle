@@ -54,6 +54,14 @@
       "title": "Build the accepted sound-chip watch fix: report its writes at the right address, update our contract copy, and move in step with aeon's tool."
     },
     {
+      "id": "F-Z80-WIRE-CAVEAT-ABSENT",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "A warning our emulator attaches to Z80 watch results never reaches the tools that read them. Check what's left of it after the watch fix, then deliver or retire it."
+    },
+    {
       "id": "LENS-WAVE-1",
       "state": "blocked",
       "size": "L",
@@ -88,5 +96,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T15:01:29Z"
+  "updatedAt": "2026-09-25T15:01:37Z"
 }
