@@ -1103,16 +1103,13 @@ fn the_68000s_own_sound_chip_writes_stay_68000_hits_beside_the_z80s() {
         "the 68000's own write, with its fc"
     );
     assert!(ym_hits[..2].iter().all(|&(v, _, _)| v == WatchVia::Z80));
-    let psg_hits = of(psg);
+    let psg_hits: Vec<(WatchVia, u32)> = of(psg).iter().map(|&(v, _, a)| (v, a)).collect();
     assert_eq!(
-        psg_hits
-            .iter()
-            .filter(|&&(v, _, _)| v == WatchVia::Bus)
-            .count(),
-        1,
-        "the 68000's $A07F11 write is one hit, not two: {psg_hits:?}"
+        psg_hits,
+        vec![(WatchVia::Z80, 0xA0_7F11), (WatchVia::Bus, 0xA0_7F11)],
+        "the Z80's PSG write, then the 68000's as ONE hit (its chip copy is not offered)"
     );
-    assert_eq!(psg_hits.last(), Some(&(WatchVia::Bus, 5, 0xA0_7F11)));
+    assert_eq!(of(psg)[1].1, 5, "the 68000's PSG write keeps its fc");
     assert_eq!(
         wp.watch(raw).unwrap().matched,
         0,
