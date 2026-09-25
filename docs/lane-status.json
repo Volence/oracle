@@ -1,15 +1,15 @@
 {
-  "focus": "Building the sound-chip watch fix, timed with aeon's matching change; trimming our boot notes alongside.",
+  "focus": "Rebooted after the account switch; two half-finished jobs sit parked and need a go to resume.",
   "inFlight": [
     {
-      "what": "Sound-chip watch fix: report the Z80's sound writes at the right address, plus the new contract copy",
-      "where": "branch parcel/z80-watch-tap",
-      "agent": true
+      "what": "Sound-chip watch fix: about a third written, uncommitted, no agent on it since the switch",
+      "where": "branch parcel/z80-watch-tap (worktree, uncommitted)",
+      "agent": false
     },
     {
-      "what": "Trim the boot notes: move closed history to the log",
-      "where": "branch parcel/overseer-cut-0925",
-      "agent": true
+      "what": "Boot-notes trim: mostly written, uncommitted and unchecked, no agent on it since the switch",
+      "where": "branch parcel/overseer-cut-0925 (worktree, uncommitted)",
+      "agent": false
     }
   ],
   "blockedOnOwner": [
@@ -19,7 +19,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When both land: the notes trim first, then the watch fix pushed in the same window as aeon's constant move.",
+  "nextBoundary": "Now, for a clear: nothing runs. Partial diffs sit in two worktrees; resume or restart each.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -47,15 +47,15 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "doing",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Build the accepted sound-chip watch fix: report its writes at the right address, update our contract copy, and move in step with aeon's tool."
+      "title": "Build the accepted sound-chip watch fix (a partial draft is parked), update our contract copy, and move in step with aeon."
     },
     {
       "id": "F-Z80-WIRE-CAVEAT-ABSENT",
-      "state": "next",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -94,7 +94,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
+  "awaiting": "your go: resume the sound-chip watch fix and the notes trim (both parked mid-way by the account switch)",
   "atBoundary": false,
-  "updatedAt": "2026-09-25T15:01:37Z"
+  "updatedAt": "2026-09-25T15:07:33Z"
 }
