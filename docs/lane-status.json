@@ -1,14 +1,9 @@
 {
-  "focus": "Resuming the sound-chip watch fix and the boot-notes trim after the account switch; hub gave the go.",
+  "focus": "Boot-notes trim landed; building the sound-chip watch fix to go out together with aeon's matching change.",
   "inFlight": [
     {
       "what": "Sound-chip watch fix: report the Z80's sound writes at the right address, plus the new contract copy",
       "where": "branch parcel/z80-watch-tap",
-      "agent": true
-    },
-    {
-      "what": "Trim the boot notes: check and finish the half-done move of closed history",
-      "where": "branch parcel/overseer-cut-0925",
       "agent": true
     }
   ],
@@ -19,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When both land: notes trim first, then the watch fix pushed in the same window as aeon's address move.",
+  "nextBoundary": "When the watch fix lands and is pushed in the same window as aeon's address move.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -96,5 +91,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T15:50:07Z"
+  "updatedAt": "2026-09-25T16:18:50Z"
 }
