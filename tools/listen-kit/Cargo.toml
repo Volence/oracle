@@ -2,7 +2,6 @@
 name = "listen-kit"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.96.0"
 publish = false
 description = "The d-51 listening kit's headless renderer and WAV differ: renders one ROM stretch to WAV with the Z80 /INT census on, so a before build and an after build can be compared sample by sample. Not a workspace member; see docs/2026-09-25-d51-listen-kit.md."
 
