@@ -3,7 +3,8 @@
 //! ([`crate::bus::MD_VERSION`]); everything below it lives here.
 //!
 //! Byte formats and the 3-button TH protocol are pinned in `docs/2026-07-17-io-recon.md` (IO1–IO6). The
-//! read model is IO3: `read = (latch & ctrl) | (device & !ctrl)`. Input is **injected state only**
+//! read model is IO3: `read = (latch & m) | (device & !m)` with `m = (ctrl & $7F) | $80` — Data bit 7 has no pin
+//! and always reads back the latch (`F-IO-DATA-BIT7`). Input is **injected state only**
 //! ([`Io::set_pad`]) — there is no host-input path anywhere in the core.
 //!
 //! **Currency note:** `Io` is in **neither** frozen currency (Oracle `state_hash` / `export_state`) — an
@@ -15,6 +16,21 @@
 /// TH — the select line, bit 6 of a port's Data register (recon IO4). The game drives it as an output to
 /// pick which nibble the 3-button pad presents.
 const TH_BIT: u32 = 6;
+
+/// Data-register bits that no pin drives and that therefore always read back the Data latch: bit 7
+/// (`F-IO-DATA-BIT7`, settled 2026-09-25, `docs/2026-09-25-io-data-bit7.md`). The port has seven pins
+/// (PA0-PA6), so bit 7 is a plain register bit, and it reads back whatever was last written there,
+/// whatever Control says (Control bit 7 is the TH-interrupt enable, not a direction bit). Three sources, the
+/// first two with a mechanism:
+///
+/// * the YM6046 / 315-5309 die netlist (`emu-russia/SEGAChips` `IOChip/IO.v` @ `6ec064e`): the 68000-mode
+///   read mux for `$A10003` takes bit 7 from the Q of flip-flop `g_87`, clocked by the Port A Data write
+///   strobe with D = data-bus bit 7;
+/// * Nuked-MD `iochip.c` @ `9c219b3` (FC1004 decap): `if (chip->port_a.p_data.q & 128) chip->read_data |= 128;`
+/// * Charles MacDonald, *Sega Genesis hardware notes* v0.8 §3.1, measured on a console: "Bit 7 isn't
+///   connected to any pin on the I/O port. It will latch a value written to it" (`$7F` → write `$80` →
+///   `$FF` → write `$00` → `$7F`).
+const DATA_LATCH_ONLY: u8 = 0x80;
 
 /// One of the three I/O ports, each with a Data, Control and serial register set (recon IO1): Port 1
 /// (Player 1), Port 2 (Player 2) and EXP (the modem/EXT connector). The bus's address decode ([`io_reg`])
@@ -140,10 +156,12 @@ pub fn io_reg(addr: u32) -> Option<(Port, IoReg)> {
     Some(hit)
 }
 
-/// The byte a 3-button pad drives given the TH line it sees (recon IO4). Active-low: a pressed button reads
-/// `0`, released reads `1`. Bit 7 (and, in the TH-high set, the undriven high bits) float high via the port
-/// pull-ups. TH (bit 6) is normally an output, so its read-back comes from the console latch via the IO3
-/// model — the value placed here is masked out for an output TH.
+/// The seven pin levels (bits 6-0) a 3-button pad presents given the TH line it sees (recon IO4).
+/// Active-low: a pressed button reads `0`, released reads `1`; in the TH-high set bit 6 is the pulled-up
+/// select line. TH is normally an output, so its read-back comes from the console latch via the IO3 model —
+/// the value placed here is masked out for an output TH. **Bit 7 is always `0` here and never reaches a
+/// read:** the port has no eighth pin, and [`Io::read_data`] takes Data bit 7 from the latch
+/// (`F-IO-DATA-BIT7`, [`DATA_LATCH_ONLY`]).
 fn pad_device_byte(pad: Pad, th_high: bool) -> u8 {
     let lo = |pressed: bool| -> u8 {
         if pressed {
@@ -153,8 +171,8 @@ fn pad_device_byte(pad: Pad, th_high: bool) -> u8 {
         }
     };
     if th_high {
-        // bits 7,6 pull-up high; 5=C 4=B 3=Right 2=Left 1=Down 0=Up.
-        0b1100_0000
+        // bit 6 = TH, pulled high; 5=C 4=B 3=Right 2=Left 1=Down 0=Up.
+        0b0100_0000
             | (lo(pad.c) << 5)
             | (lo(pad.b) << 4)
             | (lo(pad.right) << 3)
@@ -162,9 +180,8 @@ fn pad_device_byte(pad: Pad, th_high: bool) -> u8 {
             | (lo(pad.down) << 1)
             | lo(pad.up)
     } else {
-        // bit 7 pull-up high; 6=TH(0); 5=Start 4=A; bits 3,2 forced low (the MD-pad detection signature);
-        // 1=Down 0=Up.
-        0b1000_0000 | (lo(pad.start) << 5) | (lo(pad.a) << 4) | (lo(pad.down) << 1) | lo(pad.up)
+        // 6=TH(0); 5=Start 4=A; bits 3,2 forced low (the MD-pad detection signature); 1=Down 0=Up.
+        (lo(pad.start) << 5) | (lo(pad.a) << 4) | (lo(pad.down) << 1) | lo(pad.up)
     }
 }
 
@@ -205,7 +222,7 @@ pub struct Pad {
 /// assert!(io.pad(PadPort::P2).a);
 /// io.write_ctrl(Port::Exp, 0x40);
 /// io.write_data(Port::Exp, 0x40);
-/// assert_eq!(io.read_data(Port::Exp), 0xFF, "EXP's Data register answers, as for a released pad");
+/// assert_eq!(io.read_data(Port::Exp), 0x7F, "EXP's Data register answers, as for a released pad");
 /// ```
 ///
 /// A pad asked of EXP by number does not:
@@ -265,7 +282,8 @@ impl Io {
         self.pad[port.index()]
     }
 
-    /// Read a Data register (recon IO3): output pins return the latch, input pins return the pad device byte.
+    /// Read a Data register (recon IO3): output pins return the latch, input pins return the pad device byte,
+    /// and bit 7 — which has no pin — always returns the latch (`DATA_LATCH_ONLY`, `F-IO-DATA-BIT7`).
     /// `TH_line` is the latch's bit 6 when TH is an output, else pull-up high. EXP has no pad
     /// ([`Port::pad_port`] is `None`), so its device byte is that of an all-released pad.
     pub fn read_data(&self, port: Port) -> u8 {
@@ -278,7 +296,9 @@ impl Io {
         };
         let pad = port.pad_port().map_or(Pad::default(), |p| self.pad(p));
         let device = pad_device_byte(pad, th_high);
-        (latch & ctrl) | (device & !ctrl)
+        // Bits 6-0: Control's direction bits pick latch or pin. Bit 7: the latch, always.
+        let from_latch = (ctrl & 0x7F) | DATA_LATCH_ONLY;
+        (latch & from_latch) | (device & !from_latch)
     }
 
     /// Write a Data register: every bit is latched; only output pins drive the wire (recon IO3).
@@ -410,7 +430,7 @@ mod tests {
     #[test]
     fn th_high_reports_c_b_right_left_down_up() {
         // TH=1 (latch $40). Press C (bit5) + Right (bit3). Active-low → those bits read 0, the rest 1.
-        // device = 0b1101_0111 (0xD7); read = latch|(device&!ctrl) = 0xD7.
+        // pins = 0b101_0111; bit 7 = the latched 0 (F-IO-DATA-BIT7) → read = 0x57.
         let mut io = configured(0x40);
         io.set_pad(
             PadPort::P1,
@@ -420,13 +440,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(io.read_data(Port::P1), 0xD7);
+        assert_eq!(io.read_data(Port::P1), 0x57);
     }
 
     #[test]
     fn th_low_reports_start_a_and_forces_bits_2_3_low() {
         // TH=0 (latch $00). Press Start (bit5). A released (bit4=1); bits 3,2 forced 0; Down/Up=1.
-        // device = 0b1001_0011 (0x93); read = 0x93.
+        // pins = 0b001_0011; bit 7 = the latched 0 (F-IO-DATA-BIT7) → read = 0x13.
         let mut io = configured(0x00);
         io.set_pad(
             PadPort::P1,
@@ -435,15 +455,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(io.read_data(Port::P1), 0x93);
+        assert_eq!(io.read_data(Port::P1), 0x13);
         // The detection signature: bits 3 and 2 are 0 no matter what (nothing maps there at TH=0).
         assert_eq!(io.read_data(Port::P1) & 0b0000_1100, 0);
     }
 
     #[test]
     fn all_released_reads_high_active_low() {
-        // TH=1, nothing pressed → the low six bits are all 1 (released). read = 0xFF.
-        assert_eq!(configured(0x40).read_data(Port::P1), 0xFF);
+        // TH=1, nothing pressed → the low six bits are all 1 (released), TH reads its driven 1, and bit 7 is
+        // the latched 0 (F-IO-DATA-BIT7). read = 0x7F; latching bit 7 as well reads 0xFF.
+        assert_eq!(configured(0x40).read_data(Port::P1), 0x7F);
+        assert_eq!(configured(0xC0).read_data(Port::P1), 0xFF);
     }
 
     #[test]
@@ -484,7 +506,7 @@ mod tests {
         let mut io = Io::default();
         io.write_ctrl(Port::Exp, 0x40);
         io.write_data(Port::Exp, 0x40);
-        assert_eq!(io.read_data(Port::Exp), 0xFF);
+        assert_eq!(io.read_data(Port::Exp), 0x7F);
     }
 
     #[test]
