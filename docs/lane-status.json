@@ -51,6 +51,14 @@
       "title": "Sweep wave 1: both measured fixes landed today. Left: two look-at-it questions for you (how an unreadable save is shown; which rule the two address boxes share)."
     },
     {
+      "id": "PARALLAX-STRIDE-EQUATE",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "LIVE-EFFECTS",
+      "title": "aeon now publishes the band size directly, so the effects panel can read it instead of working it out by division."
+    },
+    {
       "id": "F-BANKED-ADDR-AMBIGUITY",
       "state": "open",
       "size": "M",
@@ -85,5 +93,5 @@
   ],
   "awaiting": "your pick: the sound kit (d-51), a look at the '...' marks, or the sound-chip watch fix. Nothing is running.",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T10:28:09Z"
+  "updatedAt": "2026-09-25T10:53:55Z"
 }
