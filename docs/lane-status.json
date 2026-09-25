@@ -1,27 +1,6 @@
 {
-  "focus": "Working overnight on your go: marking cut panel lines, two small puzzles, and a before/after sound kit for you.",
-  "inFlight": [
-    {
-      "what": "Put the '...' mark on panel lines cut by a table wider than its pane (no wrapping, no layout change)",
-      "where": "branch parcel/panel-clip-mark-box",
-      "agent": true
-    },
-    {
-      "what": "Settle which answer is right for the controller-port bit we disagree on",
-      "where": "branch parcel/io-data-bit7",
-      "agent": true
-    },
-    {
-      "what": "Build the sound-interrupt change on a side branch plus a before/after listening kit; nothing lands until you listen",
-      "where": "branch side/d51-int-level-listen",
-      "agent": true
-    },
-    {
-      "what": "A checker that says a test run passed only when every part really passed, plus a time limit on the long test job",
-      "where": "branch parcel/ci-verdict-tool",
-      "agent": true
-    }
-  ],
+  "focus": "Landed overnight: the controller-bit fix, a CI checker, the '...' marks. Your sound kit is ready to listen to.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -29,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the four agents return and their work is checked and landed (the sound kit stays on its side branch).",
+  "nextBoundary": "Here: nothing running, everything landed and pushed. The sound change stays on its side branch until you listen.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -37,23 +16,7 @@
       "size": "L",
       "blockedBy": "your eyes: look calls 1-36",
       "project": "ORACLE-DEBUG-UI",
-      "title": "Every buildable item in the debug-window audit is done. What remains is 36 questions only you can answer, by looking at the window."
-    },
-    {
-      "id": "PANEL-CLIP-MARK",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEBUG-UI",
-      "title": "Hub ruled d-54 mark-only: the 67 panel lines cut by a table or control wider than its pane get the '...' mark. Wrap and widths stay yours."
-    },
-    {
-      "id": "F-IO-DATA-BIT7",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "We and another emulator disagree about one bit of the controller port on every ordinary pad read. Recorded honestly: nobody can show who is right, and no real pin corresponds to it."
+      "title": "Every buildable item in the debug-window audit is done, including the '...' marks. Left: 36 questions only you can answer by looking."
     },
     {
       "id": "LIVE-EFFECTS-NUDGE-LOOK",
@@ -65,11 +28,11 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "doing",
+      "state": "blocked",
       "size": "S",
-      "blockedBy": "your ear: card d-51 (kit being built; lands only after you listen)",
+      "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
-      "title": "The sound chip's interrupt signal should last one line, not until taken. It changes what a real driver hears, so card d-51 asks whether you want to listen first."
+      "title": "The sound-interrupt change is built on a side branch with a before/after kit. It lands only after you listen."
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
@@ -112,15 +75,15 @@
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
     },
     {
-      "id": "F-CI-VERDICT-TOOL",
-      "state": "doing",
+      "id": "PANEL-CLIP-LOOK",
+      "state": "blocked",
       "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "A small checker that says a test run passed only when every part of it really passed, and a time limit on the long test job."
+      "blockedBy": "your eyes",
+      "project": "ORACLE-DEBUG-UI",
+      "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-25T07:07:12Z"
+  "awaiting": "your ear on the sound kit (~/sonic_hacks/listen/d51/README.txt), and your eyes on the '...' marks in narrow panels. Nothing is running.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-25T09:27:00Z"
 }
