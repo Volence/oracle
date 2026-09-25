@@ -2292,7 +2292,123 @@ mod tests {
         println!("HOVER: {} cut lines, each on one hover", cuts.len());
     }
 
-    /// Every arrangement the cut sweep drives:    /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
+    /// ★ **A line the PANE cut is one hover away too — exactly one** (`PANEL-CLIP-MARK`, `d-54`).
+    ///
+    /// The row above covers lines the toolkit elided at a width it was told. This one covers the class
+    /// [`crate::cut_mark`] marks: text whose container is wider than its pane, cut by the pane's edge. Its
+    /// hover has two sources and the double hover the first parcel found is exactly what happens if both
+    /// fire, so both are driven:
+    ///
+    /// * a run the toolkit had NOT elided, which the pass is the first to cut — its hover is the pass's own
+    ///   region (a table cell, a hex row, a wrapped paragraph);
+    /// * a run the toolkit HAD elided at a width wider than the pane, whose `…` was off the glass until the
+    ///   pass drew one where it can be seen — its hover is the `Label`'s own, and the pass must add none.
+    ///
+    /// Which is which is read off the CONTROL arm ([`crate::cut_mark::with_marking_off`]), not assumed:
+    /// a run is in play when the control arm cut it with no mark and the treatment arm shows it marked.
+    /// Each is hovered on a glyph really on the glass, with the tooltip delay at zero.
+    ///
+    /// *Controls:* both kinds, and a wrapped paragraph among them, must be hovered, or a half of this is
+    /// measured by nothing.
+    #[test]
+    fn the_whole_of_a_line_the_pane_cut_is_on_its_hover() {
+        // (tab, whole text, a point on it, the toolkit had elided it, rows)
+        let mut cases: Vec<(Tab, String, egui::Pos2, bool, usize)> = Vec::new();
+        for tab in [Tab::Memory, Tab::Objects, Tab::Pacing, Tab::Watchpoints] {
+            let off = crate::cut_mark::with_marking_off(|| {
+                let mut lp = fixture(narrow_dock(tab));
+                one(&mut lp, &Setup::default())
+            });
+            let cut_off: Vec<(String, bool)> = painted_of(&off, tab)
+                .iter()
+                .filter(|g| {
+                    row_cuts(g)
+                        .iter()
+                        .any(|c| !c.visible.trim_end().ends_with('\u{2026}') && c.box_over > 0.0)
+                })
+                .map(|g| (g.galley.text().to_owned(), g.galley.elided))
+                .collect();
+            let mut lp = fixture(narrow_dock(tab));
+            let on = one(&mut lp, &Setup::default());
+            let mut taken = 0;
+            for g in painted_of(&on, tab) {
+                let whole = g.galley.text();
+                let Some(&(_, was_elided)) = cut_off.iter().find(|(t, _)| t == whole) else {
+                    continue;
+                };
+                if announced_rows(g) == 0 || cases.iter().any(|c| c.1 == whole) {
+                    continue;
+                }
+                // Enough of each kind per tab to cover it, not every hex row in the Memory pane.
+                let kind = cases
+                    .iter()
+                    .filter(|c| c.0 == tab && c.3 == was_elided)
+                    .count();
+                if kind >= 2 || taken >= 4 {
+                    continue;
+                }
+                if let Some(at) = glyph_point(g) {
+                    cases.push((tab, whole.to_owned(), at, was_elided, g.galley.rows.len()));
+                    taken += 1;
+                }
+            }
+        }
+        assert!(
+            cases.iter().any(|c| !c.3),
+            "control: no run the pass was the first to cut was found to hover: {cases:?}"
+        );
+        assert!(
+            cases.iter().any(|c| c.3),
+            "control: no run the toolkit had already elided past the pane was found, so the no-double-hover \
+             half is measured by nothing: {cases:?}"
+        );
+        assert!(
+            cases.iter().any(|c| c.4 > 1),
+            "control: no wrapped paragraph is among the hovered runs: {cases:?}"
+        );
+        for (tab, whole, at, was_elided, _) in &cases {
+            let at = *at;
+            let script = move |i: u32| {
+                if i >= 2 {
+                    vec![egui::Event::PointerMoved(at)]
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut lp = fixture(narrow_dock(*tab));
+            let p = settled_with(
+                &mut lp,
+                Mode::Record,
+                WARM,
+                &script,
+                &Setup {
+                    tooltip_now: true,
+                    ..Setup::default()
+                },
+            );
+            let tip: Vec<String> = p
+                .other_layers
+                .iter()
+                .flat_map(|(_, t)| t.iter().map(|k| k.text.clone()))
+                .collect();
+            let n = tip.iter().filter(|t| *t == whole).count();
+            assert_eq!(
+                n, 1,
+                "{tab:?}: the line the pane cut {whole:?} (toolkit-elided: {was_elided}) must be on its \
+                 hover exactly once. Other layers: {tip:?}"
+            );
+        }
+        println!(
+            "HOVER (pane cuts): {} lines, {} first cut by the pass, {} already elided by the toolkit, {} \
+             wrapped; each on one hover",
+            cases.len(),
+            cases.iter().filter(|c| !c.3).count(),
+            cases.iter().filter(|c| c.3).count(),
+            cases.iter().filter(|c| c.4 > 1).count()
+        );
+    }
+
+    /// Every arrangement the cut sweep drives: the default dock, every-tab, the eleven focus layouts, a
     /// narrow pane per tab, and the two scales the attribution gate uses.
     fn cut_arrangements() -> Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> {
         let mut v: Vec<(String, egui_dock::DockState<Tab>, Option<f32>)> = arrangements()
@@ -2317,58 +2433,47 @@ mod tests {
         v
     }
 
-    /// **The button-like captions the sweep below still finds cut with no mark, and cannot fix.**
+    /// **The captions the sweep still finds cut with no mark, and why each cannot take one.**
     ///
-    /// Each is a `Button` or `selectable_label` caption in a control strip narrower than the strip needs,
-    /// so the WIDGET is half off the pane, not merely its text: an elision mark inside a control the
-    /// reader cannot click is not the cure, and the cure — letting the strip wrap, or bounding it — is a
-    /// layout change and the owner's half. Listed here so a NEW unmarked cut cannot hide among them.
-    const CONTROLS_LEFT_FOR_THE_OWNER: [&str; 5] = [
-        "raster program",
-        "place rings\u{2026}",
-        "spawn mode\u{2026}",
-        "load",
-        "\u{25c0}",
-    ];
+    /// Until `d-54` was ruled (`mark-only`, 2026-09-25) this list held five button-like captions whose
+    /// WIDGET was half off the pane, booked for the owner because the only width that could mark them was a
+    /// layout change. [`crate::cut_mark`] now marks the painted row instead, which needs no width, and four
+    /// of the five carry the mark. What is left is a caption of **one glyph**: the toolkit's elision keeps at
+    /// least one glyph on a row, so a one-glyph caption cut by a few points has nothing to trade for the mark
+    /// except itself, and a caption replaced by a bare `…` is exactly the collapse the `blanked` check below
+    /// refuses. `◀` (the Screen strip's step-back control, cut by about 3 points in every-tab @2) is the only
+    /// such caption the sweep finds. Listed so a NEW unmarked cut cannot hide beside it.
+    const CONTROLS_LEFT_FOR_THE_OWNER: [&str; 1] = ["\u{25c0}"];
 
-    /// The unmarked cut rows whose layout BOX the pane cannot show, as measured when this gate was
-    /// written: the owner's half (a body whose content is wider than its pane, scrolled horizontally).
-    /// A **ceiling**, not a pin — the owner's half may shrink, and this number comes down with it; it may
-    /// not grow, because growing means a new line was cut where none was.
-    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 60;
+    /// The unmarked cut rows whose layout BOX the pane cannot show (a body whose content is wider than its
+    /// pane, scrolled horizontally). A **ceiling**, not a pin, and it may only come down: 60 when the first
+    /// parcel booked it (2026-09-17), 0 since [`crate::cut_mark`] marks the painted row (2026-09-25). At zero
+    /// it is an assertion that there are none; the control arm below is what shows the sweep can still see
+    /// them when they exist.
+    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 0;
 
-    /// ★ **No drawn run is cut at a pane's edge without an elision mark** (`F-PANEL-TEXT-CUT-UNMARKED`).
-    ///
-    /// The CR-W harvest is the instrument: for every drawn panel body in every arrangement below, this
-    /// walks the galleys the body actually painted and finds each glyph row that put glyphs on the glass
-    /// AND ran past its clip's right edge. A row like that must carry the elision mark, or the reader
-    /// cannot tell it from a finished line — the defect §11.29 justifies serving `rendered` for, aimed at
-    /// the person at the window instead of at a client.
-    ///
-    /// **Two exits, and both are named rather than counted away:**
-    /// 1. the run was laid out at its NATURAL width (`wrap.max_width` infinite) — the toolkit was never
-    ///    told a width, so it never tried to fit. That is [`crate::ui::fitted_label`]'s job and the gate
-    ///    admits no such run except the control captions in [`CONTROLS_LEFT_FOR_THE_OWNER`];
-    /// 2. the run's own layout BOX already lies past the clip's right edge, so no truncation width would
-    ///    have brought it back: its container is wider than the pane. Those are the owner's half, held
-    ///    under a ceiling.
-    ///
-    /// **Loud when it cannot measure**: the sweep asserts it drove every arrangement, laid out thousands
-    /// of runs, saw runs the toolkit really elided (so a mark is a thing it can see), and saw rows really
-    /// cut (so a cut is a thing it can see). A green run that measured nothing would be the worst outcome
-    /// here, since the claim is an absence.
-    ///
-    /// `cargo test -p oracle-player --bin oracle-player -- --nocapture no_drawn_run_is_cut` prints every
-    /// remaining cut, widest first.
-    #[test]
-    fn no_drawn_run_is_cut_at_a_pane_edge_without_the_mark() {
-        let mut rows = 0usize;
-        let mut runs = 0usize;
-        let mut elided = 0usize;
-        let mut arrangements_driven = 0usize;
-        let mut offenders: Vec<(String, String, RowCut)> = Vec::new();
-        let mut blanked: Vec<(String, String, String)> = Vec::new();
-        let mut marked = 0usize;
+    /// What one arm of the cut sweep saw, over every arrangement in [`cut_arrangements`].
+    #[derive(Default)]
+    struct CutArm {
+        arrangements: usize,
+        runs: usize,
+        elided: usize,
+        /// Glyph rows that ran a glyph past their clip's right edge.
+        rows: usize,
+        /// Glyph rows whose visible text ends in the mark (cut or not): what the reader sees announced.
+        announced: usize,
+        /// Of `rows`, the ones whose visible text ends in the mark anyway.
+        marked: usize,
+        offenders: Vec<(String, String, RowCut)>,
+        blanked: Vec<(String, String, String)>,
+        /// `(arrangement, panel, text, rendered)` for every panel surface the reply served.
+        surfaces: Vec<(String, String, String, String)>,
+    }
+
+    /// **One arm of the cut sweep**: drive every arrangement and read every row every drawn body painted.
+    /// The arm is decided by the caller — [`crate::cut_mark::with_marking_off`] around it is the control.
+    fn cut_arm() -> CutArm {
+        let mut a = CutArm::default();
         for (name, dock, ppp) in cut_arrangements() {
             let mut lp = fixture(dock);
             let p = one(
@@ -2378,7 +2483,7 @@ mod tests {
                     ..Setup::default()
                 },
             );
-            arrangements_driven += 1;
+            a.arrangements += 1;
             // The arrangements where every drawn pane has real room: the dock the window opens in, and
             // the focus layouts, all at the window's own scale. A pane squeezed to fifty points may
             // honestly have nothing to show but the mark; these may not.
@@ -2387,11 +2492,14 @@ mod tests {
                 !p.spans.is_empty(),
                 "{name}: no body was drawn, so this arrangement witnesses nothing"
             );
+            for (panel, text, rendered, _) in p.panel_surfaces() {
+                a.surfaces.push((name.clone(), panel, text, rendered));
+            }
             for (span, painted) in p.spans.iter().zip(&p.painted) {
                 for g in painted {
-                    runs += 1;
+                    a.runs += 1;
                     if g.galley.elided {
-                        elided += 1;
+                        a.elided += 1;
                     }
                     // ⚑ A run truncated to NOTHING BUT the mark, in a pane with room for more. The sweep
                     // below cannot see this one: such a run fits its clip perfectly and is never cut. It
@@ -2405,64 +2513,196 @@ mod tests {
                             if !r.rendered.trim().is_empty()
                                 && r.rendered.trim().chars().all(|c| c == '\u{2026}')
                             {
-                                blanked.push((name.clone(), span.name.to_owned(), r.text.clone()));
+                                a.blanked.push((
+                                    name.clone(),
+                                    span.name.to_owned(),
+                                    r.text.clone(),
+                                ));
                             }
                         }
                     }
+                    a.announced += announced_rows(g);
                     for c in row_cuts(g) {
-                        rows += 1;
+                        a.rows += 1;
                         if c.visible.trim_end().ends_with('\u{2026}') {
-                            marked += 1;
+                            a.marked += 1;
                         } else {
-                            offenders.push((name.clone(), span.name.to_owned(), c));
+                            a.offenders.push((name.clone(), span.name.to_owned(), c));
                         }
                     }
                 }
             }
         }
-        offenders.sort_by(|a, b| b.2.over.total_cmp(&a.2.over));
-        for (arr, panel, c) in &offenders {
+        a.offenders.sort_by(|a, b| b.2.over.total_cmp(&a.2.over));
+        a
+    }
+
+    /// The glyph rows of `p` whose visible text, trailing blanks aside, ends in the elision mark.
+    fn announced_rows(p: &Painted) -> usize {
+        let origin = p.pos.to_vec2();
+        p.galley
+            .rows
+            .iter()
+            .filter(|row| {
+                let o = origin + row.pos.to_vec2();
+                row.glyphs
+                    .iter()
+                    .filter(|g| {
+                        let r = g.logical_rect().translate(o);
+                        r.min.x < p.clip.max.x
+                            && r.max.x > p.clip.min.x
+                            && r.min.y < p.clip.max.y
+                            && r.max.y > p.clip.min.y
+                            && !g.chr.is_whitespace()
+                    })
+                    .last()
+                    .is_some_and(|g| g.chr == '\u{2026}')
+            })
+            .count()
+    }
+
+    fn print_cuts(arm: &str, a: &CutArm) {
+        for (arr, panel, c) in &a.offenders {
             println!(
-                "CUT over={:8.2} wrap={:9.1} box_over={:9.2} rows={} elided={} clip_w={:7.1} {arr} / {panel} :: visible={:?} source={:?}",
+                "CUT[{arm}] over={:8.2} wrap={:9.1} box_over={:9.2} rows={} elided={} clip_w={:7.1} {arr} / {panel} :: visible={:?} source={:?}",
                 c.over, c.wrap_max, c.box_over, c.rows, c.elided, c.clip_w, c.visible, c.source
             );
         }
+    }
+
+    /// ★ **No drawn run is cut at a pane's edge without an elision mark** (`F-PANEL-TEXT-CUT-UNMARKED`,
+    /// `PANEL-CLIP-MARK`, `d-54` ruled mark-only).
+    ///
+    /// The CR-W harvest is the instrument: for every drawn panel body in every arrangement below, this
+    /// walks the galleys the body actually painted and finds each glyph row that put glyphs on the glass
+    /// AND ran past its clip's right edge. A row like that must carry the elision mark, or the reader
+    /// cannot tell it from a finished line — the defect §11.29 justifies serving `rendered` for, aimed at
+    /// the person at the window instead of at a client.
+    ///
+    /// **One exit, named rather than counted away:** a caption of one glyph, in
+    /// [`CONTROLS_LEFT_FOR_THE_OWNER`]. The box-overflow class the first parcel booked under a ceiling of
+    /// 60 is now marked by [`crate::cut_mark`], and the ceiling is 0.
+    ///
+    /// **Two arms, because the claim is an absence.** [`crate::cut_mark`] repairs a cut row by making it
+    /// FIT (its glyphs now end in the mark before the clip), so on the treatment arm the rows it marked are
+    /// no longer cuts at all and a sweep that saw nothing would read exactly like one that fixed
+    /// everything. The CONTROL arm runs the same sweep with the pass switched off
+    /// ([`crate::cut_mark::with_marking_off`]) and must find the class the pass exists for — box cuts, and
+    /// among them wrapped paragraphs — and the treatment arm must show the reader MORE rows ending in the
+    /// mark than the control did, by at least the cuts it removed.
+    ///
+    /// **And the contract, across the two arms:** every panel surface's served `text` is byte-identical
+    /// with and without the pass (§11.50: `text` is every run the toolkit LAID OUT, which marking the glass
+    /// must not touch, so row k / run j of `text` is the same run either way), while `rendered` differs
+    /// wherever a mark was painted.
+    ///
+    /// **Loud when it cannot measure**: the sweep asserts it drove every arrangement, laid out thousands
+    /// of runs, and saw runs the toolkit really elided (so a mark is a thing it can see).
+    ///
+    /// `cargo test -p oracle-player --bin oracle-player -- --nocapture no_drawn_run_is_cut` prints every
+    /// remaining cut on both arms, widest first.
+    #[test]
+    fn no_drawn_run_is_cut_at_a_pane_edge_without_the_mark() {
+        let on = cut_arm();
+        let off = crate::cut_mark::with_marking_off(cut_arm);
+        print_cuts("on", &on);
+        print_cuts("off", &off);
 
         // --- loud when it cannot measure ---
-        assert_eq!(
-            arrangements_driven,
-            cut_arrangements().len(),
-            "the sweep did not drive every arrangement"
-        );
+        for (arm, a) in [("treatment", &on), ("control", &off)] {
+            assert_eq!(
+                a.arrangements,
+                cut_arrangements().len(),
+                "{arm}: the sweep did not drive every arrangement"
+            );
+        }
         // A floor on the LIST as well as on the loop over it: the assertion above compares the sweep with
         // the same function that fed it, so it cannot notice the list itself being cut down.
         assert!(
-            arrangements_driven >= 28,
-            "only {arrangements_driven} arrangements are swept; the defect was found by sweeping the \
-             default dock, every-tab, every focus layout, a narrow pane per tab and two scales"
+            on.arrangements >= 28,
+            "only {} arrangements are swept; the defect was found by sweeping the default dock, \
+             every-tab, every focus layout, a narrow pane per tab and two scales",
+            on.arrangements
         );
         assert!(
-            runs > 2000,
-            "anti-vacuity: only {runs} runs were laid out, so this sweep is not measuring the panels"
+            on.runs > 2000,
+            "anti-vacuity: only {} runs were laid out, so this sweep is not measuring the panels",
+            on.runs
         );
         assert!(
-            elided > 0,
+            off.elided > 0,
             "anti-vacuity: the toolkit elided nothing anywhere, so this gate cannot see a mark at all"
         );
+
+        // --- the control arm: the sweep sees the cuts the pass removes ---
+        let box_off: Vec<_> = off
+            .offenders
+            .iter()
+            .filter(|(_, _, c)| c.wrap_max.is_finite() && c.box_over > 0.0)
+            .collect();
         assert!(
-            rows > 0,
-            "anti-vacuity: no row was cut anywhere, so this gate cannot see a cut at all and would pass \
-             on a window that draws no text"
+            !box_off.is_empty(),
+            "control: with the marking pass off the sweep found no row cut because its container is \
+             wider than its pane, so nothing here shows it can see the class `cut_mark` exists for"
+        );
+        assert!(
+            box_off.iter().any(|(_, _, c)| c.rows > 1),
+            "control: no wrapped paragraph is cut with the pass off, so the rows-of-a-paragraph half of \
+             the treatment is measured by nothing"
+        );
+        let removed = off.offenders.len() - on.offenders.len().min(off.offenders.len());
+        assert!(
+            on.offenders.len() < off.offenders.len(),
+            "the marking pass changed nothing the sweep can see: {} unmarked cuts with it, {} without",
+            on.offenders.len(),
+            off.offenders.len()
+        );
+        assert!(
+            on.announced >= off.announced + removed,
+            "the pass removed {removed} unmarked cuts, but the reader sees only {} rows ending in the mark \
+             against {} without it: a cut was hidden rather than announced",
+            on.announced,
+            off.announced
+        );
+
+        // --- the contract: `text` is the layout's, and marking the glass does not touch it ---
+        assert_eq!(
+            on.surfaces.len(),
+            off.surfaces.len(),
+            "the two arms served a different number of panel surfaces"
+        );
+        let mut rendered_changed = 0usize;
+        for (a, b) in on.surfaces.iter().zip(&off.surfaces) {
+            assert_eq!(
+                (&a.0, &a.1),
+                (&b.0, &b.1),
+                "the two arms served their panels in a different order"
+            );
+            assert_eq!(
+                a.2, b.2,
+                "{} / {}: the panel's served `text` changed when the glass was marked; `text` is every run \
+                 the toolkit laid out, and marking must leave it alone",
+                a.0, a.1
+            );
+            if a.3 != b.3 {
+                rendered_changed += 1;
+            }
+        }
+        assert!(
+            rendered_changed > 0,
+            "no served `rendered` differs between the arms, so the mark never reached what a client reads"
         );
 
         assert!(
-            blanked.is_empty(),
+            on.blanked.is_empty(),
             "a run was truncated to nothing but the elision mark in a pane with room for more, which \
-             tells the reader less than an empty cell would: {blanked:?}"
+             tells the reader less than an empty cell would: {:?}",
+            on.blanked
         );
 
-        // --- the fix: a run laid out at its natural width must not be cut without the mark ---
-        let mut natural: Vec<(&str, &str, &str)> = offenders
+        // --- what is left: the one-glyph captions, named ---
+        let mut natural: Vec<(&str, &str, &str)> = on
+            .offenders
             .iter()
             .filter(|(_, _, c)| c.wrap_max.is_infinite())
             .map(|(arr, panel, c)| (arr.as_str(), panel.as_str(), c.source.as_str()))
@@ -2474,8 +2714,7 @@ mod tests {
         assert!(
             unlisted.is_empty(),
             "text laid out at its natural width and then cut by the pane, with nothing on the glass to \
-             say so. Draw it through `ui::fitted_label`, or — if it cannot take the mark without a \
-             layout change — add it to CONTROLS_LEFT_FOR_THE_OWNER and say why: {unlisted:?}"
+             say so, although `cut_mark` runs over every body. Find why it did not mark this run: {unlisted:?}"
         );
         let natural_rows = natural.len();
         natural.sort_unstable_by_key(|(_, _, src)| *src);
@@ -2488,8 +2727,8 @@ mod tests {
              deleted rather than left standing"
         );
 
-        // --- the owner's half: the container, not the text, is what does not fit ---
-        let box_cuts: Vec<_> = offenders
+        let box_cuts: Vec<_> = on
+            .offenders
             .iter()
             .filter(|(_, _, c)| !c.wrap_max.is_infinite())
             .collect();
@@ -2504,25 +2743,40 @@ mod tests {
         );
         assert!(
             box_cuts.len() <= BOX_CUTS_BOOKED_FOR_THE_OWNER,
-            "{} runs are cut because their container is wider than their pane; {BOX_CUTS_BOOKED_FOR_THE_OWNER} \
-             were booked for the owner's half. A new one is a new cut line, not an old one.",
+            "{} runs are cut with no mark because their container is wider than their pane; \
+             {BOX_CUTS_BOOKED_FOR_THE_OWNER} are allowed. `cut_mark` exists to mark exactly these, so \
+             find why it did not: {box_cuts:?}",
             box_cuts.len()
         );
 
         let mut by_panel: BTreeMap<&str, usize> = BTreeMap::new();
-        for (_, panel, _) in &offenders {
+        for (_, panel, _) in &off.offenders {
             *by_panel.entry(panel.as_str()).or_default() += 1;
         }
         println!(
-            "CUTS: {arrangements_driven} arrangements, {runs} runs ({elided} elided by the toolkit), \
-             {rows} rows cut at a pane edge, {marked} of them marked; unmarked {} = {natural_rows} rows of \
-             {} control captions left for the owner + {} whose box the pane cannot show (ceiling \
-             {BOX_CUTS_BOOKED_FOR_THE_OWNER})",
-            offenders.len(),
+            "CUTS: {} arrangements, {} runs ({} elided by the toolkit, {} once marked). CONTROL (marking off): {} rows cut, \
+             {} marked, {} unmarked ({} of them box cuts), {} rows announced. TREATMENT: {} rows cut, {} \
+             marked, {} unmarked = {natural_rows} rows of {} one-glyph captions + {} box cuts (ceiling \
+             {BOX_CUTS_BOOKED_FOR_THE_OWNER}), {} rows announced; {rendered_changed} of {} served panel \
+             surfaces changed `rendered`, none changed `text`",
+            on.arrangements,
+            on.runs,
+            off.elided,
+            on.elided,
+            off.rows,
+            off.marked,
+            off.offenders.len(),
+            box_off.len(),
+            off.announced,
+            on.rows,
+            on.marked,
+            on.offenders.len(),
             seen.len(),
-            box_cuts.len()
+            box_cuts.len(),
+            on.announced,
+            on.surfaces.len()
         );
-        println!("CUTS by panel: {by_panel:?}");
+        println!("CUTS control arm by panel: {by_panel:?}");
         println!("CUTS controls left for the owner: {seen:?}");
     }
 
