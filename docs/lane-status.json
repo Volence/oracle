@@ -1,5 +1,5 @@
 {
-  "focus": "Nothing left I can do alone: the last job ended in a proposal to retire it; everything else waits on you.",
+  "focus": "Everything I can do alone is landed; the rest waits on your ear (d-51) and your eyes (the look rows).",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything landed. A clear costs nothing.",
+  "nextBoundary": "Here: nothing running, all landed and pushed. Safe to clear.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -33,14 +33,6 @@
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
       "title": "The sound-interrupt change is built on a side branch with a before/after kit. It lands only after you listen."
-    },
-    {
-      "id": "F-Z80-WIRE-CAVEAT-ABSENT",
-      "state": "blocked",
-      "size": "S",
-      "blockedBy": "the hub confirming the retirement",
-      "project": "ORACLE-DEFAULT",
-      "title": "Checked: the shared rules already state this sound-processor limit permanently, so sending it per answer would be noise. Proposed retiring it; the hub confirms."
     },
     {
       "id": "LENS-WAVE-1",
@@ -75,7 +67,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row; nothing else is mine to do",
-  "atBoundary": false,
-  "updatedAt": "2026-09-25T18:14:59Z"
+  "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row; this session is clearable (~213k)",
+  "atBoundary": true,
+  "updatedAt": "2026-09-25T18:34:29Z"
 }

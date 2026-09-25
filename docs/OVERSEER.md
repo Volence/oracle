@@ -499,4 +499,6 @@ The `F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR landing (orig line 814, merge `9
 
 **`F-Z80-WIRE-CAVEAT-ABSENT` recon LANDED 2026-09-25, merge `0186592`** (agent tip `d7412ae`; docs only, `docs/2026-09-25-z80-wire-caveat-cr.md`). **Recommends RETIRE.** All four watch fragments declare `caveat`, so emitting is legal, but §6 (`protocol.md:1433-1437`, verified at empyrean `origin/main`) states the limit permanently, and a range-conditional caveat fires on every work-RAM watch (`Z80_REACHABLE_68K` includes `$E00000-$FFFFFF`), which is §2.4's constant-caveat pathology. The player keeps its line as a deliberate surface difference. ⚑ **My brief carried a wrong expectation** ("absent at `$FF0000`"); the agent refused it with the contract and the constant. Re-open triggers are in the doc. **Sent to the hub to confirm**, since §11.52's registration note says the row stays open with oracle.
 
-**NEXT:** no owner-free row remains. Everything waits on his eyes or ear (d-51, the look rows), or on the hub confirming this retirement.
+**Hub CONFIRMED the retirement (18:1xZ, no CR); row closed. Re-open triggers are in the doc.**
+
+**NEXT:** no owner-free row remains. Everything waits on his eyes or ear (d-51, the look rows). `next` is `M24-PARCEL-4-INT-LEVEL` with its blocker named, under the no-`doing` exception in `contract/LANE_STATUS.md` (state row).
