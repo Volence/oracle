@@ -88,7 +88,10 @@ pub struct Z80 {
     im: u8,
     /// `HALT` executed; waiting for an interrupt or reset.
     halted: bool,
-    /// `/INT` asserted (VDP vblank), not yet taken.
+    /// The external `/INT` line's level (the VDP's once-a-frame vblank pulse), as `System` drives it:
+    /// raised on the `VInt` event, dropped one line later on the Z80's own clock (M24 parcel 4, R6).
+    /// Acceptance does not clear it. (The name predates the level model, when this was a request that
+    /// acceptance consumed.)
     int_pending: bool,
     /// **The `EI` shadow** (M24, UM0080 p.18): "When an EI instruction is executed, any pending interrupt
     /// request is not accepted until after the instruction following EI is executed." Set by `EI` (every
@@ -415,8 +418,8 @@ impl Z80 {
     ///
     /// `int_pending` is **not** touched: it mirrors the *level* of the external `/INT` line (the VDP's
     /// vblank assert, `System::run_frames`), and resetting the CPU does not deassert a line another chip is
-    /// driving. It is harmless while held — `IFF1 = 0` masks it — and `System` clears it at the next frame
-    /// start.
+    /// driving. It is harmless while held — `IFF1 = 0` masks it — and `System` drops it when the one-line
+    /// pulse ends (M24 parcel 4).
     pub fn reset(&mut self) {
         self.pc = 0;
         self.i = 0;
@@ -636,9 +639,12 @@ impl Z80 {
     /// Accept a maskable interrupt (ZC14): clear IFF1/IFF2, un-halt, push PC, and vector per interrupt mode.
     /// On the Genesis the data bus floats to `$FF` during the interrupt-acknowledge M1, so IM 0 sees `RST 38h`
     /// (→ `$0038`, identical to IM 1) and IM 2 forms its vector as `(I << 8) | $FF`. Cost: 13 T-states for
-    /// IM 0/1, 19 for IM 2 (Z80 UM008 §"Interrupt Response"). `int_pending` is consumed (the acknowledged
-    /// request is cleared), so nothing is taken again until the next VINT raises it, however soon the
-    /// handler re-enables. Never reached inside the `EI` shadow: [`Z80::step`] refuses acceptance there.
+    /// IM 0/1, 19 for IM 2 (Z80 UM008 §"Interrupt Response"). `int_pending` is **not** consumed (M24 parcel
+    /// 4): it is the external line's level, so a handler that re-enables while `System` still holds the
+    /// one-line pulse up is entered again (R6's level corollary, MEDIUM confidence; MacDonald, SpritesMind
+    /// t=740: "A very short Z80 interrupt routine would be triggered multiple times if it finishes within
+    /// 228 Z80 clock cycles"). Before parcel 4 acceptance cleared it, so nothing was taken again until the
+    /// next VINT. Never reached inside the `EI` shadow: [`Z80::step`] refuses acceptance there.
     fn accept_interrupt<B: Z80Io>(&mut self, bus: &mut B) -> u32 {
         debug_assert!(
             !self.ei_shadow,
@@ -649,7 +655,9 @@ impl Z80 {
         self.halted = false;
         self.iff1 = false;
         self.iff2 = false;
-        self.int_pending = false;
+        // `int_pending` is NOT cleared (M24 parcel 4): it is the external `/INT` level, and acknowledging
+        // an interrupt does not deassert a line another chip is driving. A handler that re-enables while
+        // the line is still up is entered again (R6's level corollary, MEDIUM confidence).
         self.inc_r(); // the interrupt-acknowledge cycle is an M1 (refresh) cycle.
         self.sp = self.sp.wrapping_sub(2);
         self.write16(self.sp, self.pc, bus);
@@ -666,7 +674,8 @@ impl Z80 {
     }
 
     /// Set the maskable-interrupt (`/INT`) line level (ZC14). The Genesis VDP asserts this once per frame at
-    /// vblank; `System` raises it on the VInt event and clears it at the next frame start. The Z80 samples it
+    /// vblank for one line (R6); `System` raises it on the VInt event and drops it once the Z80's own clock is
+    /// a line past the assert (M24 parcel 4). Acceptance does not touch it. The Z80 samples it
     /// at each instruction boundary in [`Z80::step`], except the one right after an `EI` (the `EI` shadow,
     /// UM0080 p.18).
     pub fn set_int_line(&mut self, asserted: bool) {
@@ -2909,5 +2918,39 @@ mod tests {
         );
         assert_eq!(pushed(&mem), 0x0002, "before the second INC A");
         assert_eq!(z.a(), 1);
+    }
+
+    // ---- /INT as a level (M24 parcel 4) --------------------------------------------------------------------
+
+    /// **Acceptance does not consume the `/INT` level** (M24 parcel 4; R6's level corollary, MEDIUM
+    /// confidence: MacDonald, SpritesMind t=740, "A very short Z80 interrupt routine would be triggered
+    /// multiple times if it finishes within 228 Z80 clock cycles"). With the line held, a handler that
+    /// re-enables is entered again as soon as the `EI` shadow lets it; once the line drops, nothing more is
+    /// taken. Program: `EI; JR $`; handler at `$0038`: `EI; RET`.
+    ///
+    /// Expected, from UM0080's T-states and p.18 alone: `EI` (4), `JR` (12, the instruction `EI` protects),
+    /// then a repeating acceptance (13), `EI` (4), `RET` (10, protected), so 18 steps after the first two are
+    /// six whole cycles. Before parcel 4 acceptance cleared the request, so the second cycle never began.
+    #[test]
+    fn a_held_int_level_re_enters_a_handler_that_re_enables_and_a_dropped_one_does_not() {
+        let mut prog = [0u8; 0x3A];
+        prog[..3].copy_from_slice(&[0xFB, 0x18, 0xFE]); // EI; JR $
+        prog[0x38..0x3A].copy_from_slice(&[0xFB, 0xC9]); // EI; RET
+        let (mut z, mut mem) = ei_rig(&prog, true);
+        let lead: Vec<u32> = (0..2).map(|_| z.step(&mut mem)).collect();
+        assert_eq!(lead, [4, 12], "EI, then the JR it protects");
+        let held: Vec<u32> = (0..18).map(|_| z.step(&mut mem)).collect();
+        assert_eq!(
+            held,
+            [13, 4, 10].repeat(6),
+            "with the line held, every EI; RET is followed by another acceptance"
+        );
+        z.set_int_line(false);
+        let dropped: Vec<u32> = (0..4).map(|_| z.step(&mut mem)).collect();
+        assert_eq!(
+            dropped,
+            [12; 4],
+            "the line dropped after the last RET: nothing is taken, and JR $ loops with interrupts on"
+        );
     }
 }

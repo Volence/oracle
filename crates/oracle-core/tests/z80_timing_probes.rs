@@ -19,9 +19,9 @@
 //! |---|---|---|---|---|
 //! | C1 | `A` when the interrupt is taken, `EI` then `INC A` | 1 | 1 (UM0080 p.18) | parcel 3 (landed: 0 -> 1) |
 //! | C2a | `V`, `HL` when taken, `EI` about 0.7 line after the assert | `$E0`, 1 | `$E0` (R6), 1 (UM0080 p.18) | HL: parcel 3 (landed: 0 -> 1). Parcel 4 must leave it; a `/INT` shorter than about 0.7 line moves HL to 3309-3311 (the next frame's assert, also at `$E0`) |
-//! | C2b | `V`, `HL` when taken, `EI` about 1.2 lines after the assert | `$E1`, 1, WRONG | `$E0`, 3303-3305 (R6) | V and HL: parcel 4. Parcel 3 moved HL 0 -> 1 |
+//! | C2b | `V`, `HL` when taken, `EI` about 1.2 lines after the assert | `$E0`, 3303 | `$E0`, 3303-3305 (R6) | parcel 4 (landed on the d-51 side branch: (`$E1`, 1) -> (`$E0`, 3303)). Parcel 3 moved HL 0 -> 1 |
 //! | C3 | passes of a 34-T-state loop across 100 bus grants | the derived count | the same (UM0080 T-states, `MCLK_PER_Z80_CYCLE`) | nothing in M24; it guards M21 |
-//! | C4 | handler entries per `/INT` assert, handler re-enables inside the window | 1 per assert, WRONG (medium confidence) | 5 now that parcel 3's `EI` delay has landed; 6 without it (R6's level corollary, MEDIUM confidence) | parcel 4 |
+//! | C4 | handler entries per `/INT` assert, handler re-enables inside the window | 5 per assert | 5 now that parcel 3's `EI` delay has landed; 6 without it (R6's level corollary, MEDIUM confidence) | parcel 4 (landed on the d-51 side branch: 1 -> 5) |
 //!
 //! C2 has two legs where the design had one, with cause. The design's single leg enabled two lines after
 //! the assert, so it could only tell "`/INT` is gone within about 2.2 lines" from "it is not". A two-line
@@ -268,9 +268,10 @@ const C2A_EI_IN_LINE: (u64, u64) = {
     (after_poll, after_poll + POLL_SLACK_MAX)
 };
 
-/// Today: the request is held from the assert to the next frame's line 0 (`System`'s `EventKind::VInt`
-/// sets it, line 0 or acceptance clears it), so it is pending at the `EI` and taken once the `INC HL` after
-/// it has run: V = `$E0`, HL = 1.
+/// Today: the one-line pulse (`System`'s `EventKind::VInt` raises it, `catch_up_z80` drops it a line later
+/// on the Z80's clock, M24 parcel 4) is still up at the `EI`, and is taken once the `INC HL` after it has
+/// run: V = `$E0`, HL = 1. Parcel 4 did not move it (measured), as it must not: before parcel 4 the request
+/// was held to the next frame's line 0, which also covers this `EI`.
 // cause: M24 EI delay (UM0080 p.18): C2a HL 0 -> 1 (measured: (V, HL) = ($E0, 1); V unmoved)
 const C2A_TODAY: (u8, u16) = (0xE0, 1);
 /// R6: the pulse is one line, so it is still asserted 0.67-0.81 line after the assert and is taken on the
@@ -326,13 +327,15 @@ const C2B_EI_IN_LINE: (u64, u64) = {
     (after_poll, after_poll + POLL_SLACK_MAX)
 };
 
-/// **WRONG by the documentation, pinned because it is today's behaviour.** The request is held until the
-/// next frame's line 0, so it is still pending at this `EI` on line `$E1` and is taken once the `INC HL`
-/// after it has run (parcel 3's `EI` delay, UM0080 p.18): V = `$E1`, HL = 1. R6's value: with the pulse one
-/// line wide the request is gone before this `EI`, so the Z80 takes the NEXT frame's assert, at V = `$E0`,
-/// with HL a frame of passes ([`next_frame_hl`]). V stays wrong until parcel 4.
-// cause: M24 EI delay (UM0080 p.18): C2b HL 0 -> 1 (measured: (V, HL) = ($E1, 1); V unmoved, still WRONG)
-const C2B_TODAY: (u8, u16) = (0xE1, 1);
+/// Today's behaviour, which is now the documented one (M24 parcel 4). The `/INT` pulse is one line wide
+/// (R6), so it is gone before this `EI` on line `$E1`; the Z80 takes the NEXT frame's assert, at V = `$E0`,
+/// with HL a frame of passes ([`next_frame_hl`], 3303-3305 from the constants). Before parcel 4 the
+/// request was held until the next frame's line 0, so it was still pending at this `EI` and was taken once
+/// the `INC HL` after it had run: V = `$E1`, HL = 1 (parcel 3's `EI` delay moved HL 0 -> 1).
+// cause: M24 /INT one-line level (R6; MacDonald t=740, Eke t=787): C2b (V, HL) ($E1, 1) -> ($E0, 3303)
+// (measured: ($E0, 3303), inside the documented 3303-3305; the brief's "HL about 3291" was the design's
+// single two-line leg, before C2 was split into C2a/C2b)
+const C2B_TODAY: (u8, u16) = (0xE0, 3303);
 
 #[test]
 fn c2b_int_width_the_request_is_gone_a_fifth_of_a_line_after_one_line() {
@@ -344,6 +347,13 @@ fn c2b_int_width_the_request_is_gone_a_fifth_of_a_line_after_one_line() {
         "the C2b layout must enable after the documented pulse"
     );
     let (hl_lo, hl_hi) = next_frame_hl(ACTIVE_LINES as u64 + 1, ei_lo);
+    // The pin must sit inside the documented range: a pin outside it would be a wrong value pinned.
+    assert!(
+        C2B_TODAY.0 == 0xE0 && (hl_lo..=hl_hi).contains(&u64::from(C2B_TODAY.1)),
+        "the C2b pin ({:02X}, {}) is outside the documented ($E0, {hl_lo}-{hl_hi})",
+        C2B_TODAY.0,
+        C2B_TODAY.1
+    );
     let (mut s, _) = released(&[(0, C2B_MAIN), (0x38, C2_ISR)]);
     s.run_frames(3);
     let seen = &s.z80_ram()[OUT..OUT + 5];
@@ -354,10 +364,9 @@ fn c2b_int_width_the_request_is_gone_a_fifth_of_a_line_after_one_line() {
     let got = (seen[2], u16::from_le_bytes([seen[0], seen[1]]));
     assert_eq!(
         got, C2B_TODAY,
-        "C2b moved: (V, HL) = ({:02X}, {}) when taken. Pinned ({:02X}, {}) today, WRONG. Documented: V = \
-         $E0 and HL in {hl_lo}-{hl_hi} (R6, a one-line /INT: the next frame's assert is taken), which \
-         parcel 4 must produce with a cause: line; parcel 3 moved HL 0 -> 1 (UM0080 p.18), so HL 0 is the \
-         EI delay lost",
+        "C2b moved: (V, HL) = ({:02X}, {}) when taken. Pinned ({:02X}, {}) (parcel 4). Documented: V = \
+         $E0 and HL in {hl_lo}-{hl_hi} (R6, a one-line /INT: the next frame's assert is taken). ($E1, 1) \
+         is the pre-parcel-4 request held until taken; ($E1, 0) is that plus the EI delay lost",
         got.0, got.1, C2B_TODAY.0, C2B_TODAY.1
     );
 }
@@ -459,10 +468,14 @@ const C4_ISR: &[u8] = &[
     0xC9, // RET
 ];
 
-/// **WRONG by R6, medium confidence, pinned because it is today's behaviour.** `Z80::accept_interrupt`
-/// consumes the request (`int_pending = false`) and `System` raises it once per frame (`EventKind::VInt`),
-/// so however soon the handler re-enables there is nothing left to take: one entry per assert.
-const C4_ENTRIES_PER_ASSERT_TODAY: u64 = 1;
+/// Today's behaviour, R6's level corollary (MEDIUM confidence; M24 parcel 4). `Z80::accept_interrupt` no
+/// longer consumes the line, and `System` holds it for one line on the Z80's clock, so the handler is
+/// re-entered every time its `EI; RET` ends while the line is up: 5 per assert with parcel 3's `EI` delay
+/// ([`c4_level_entries`] of [`C4_CYCLE_WITH_EI_DELAY`]). Before parcel 4 acceptance consumed the request,
+/// so there was nothing left to take: 1 per assert.
+// cause: M24 /INT one-line level (R6; MacDonald t=740 "triggered multiple times if it finishes within 228
+// Z80 clock cycles"): C4 1 -> 5 entries per assert (measured: 15 entries over 3 asserts)
+const C4_ENTRIES_PER_ASSERT_TODAY: u64 = 5;
 
 /// R6's level model's entries per assert for a handler whose entry-to-re-entry cycle is `cycle` mclk:
 /// the line stays asserted one line past the assert, the first acceptance comes `first` mclk after the
@@ -489,7 +502,7 @@ fn span(r: (u64, u64)) -> String {
 }
 
 #[test]
-fn c4_level_a_handler_that_re_enables_inside_the_window_is_entered_once_per_assert_today() {
+fn c4_level_a_handler_that_re_enables_inside_the_window_is_re_entered_while_the_line_is_held() {
     let (mut s, release) = released(&[(0, C4_MAIN), (0x38, C4_ISR)]);
     s.run_frames(3);
     let asserts = asserts_between(release, s.scheduler().now());
@@ -499,13 +512,19 @@ fn c4_level_a_handler_that_re_enables_inside_the_window_is_entered_once_per_asse
     );
     let entries = u64::from(s.z80_ram()[OUT]);
     let plain = span(c4_level_entries(C4_CYCLE_NO_EI_DELAY));
-    let delayed = span(c4_level_entries(C4_CYCLE_WITH_EI_DELAY));
+    let documented = c4_level_entries(C4_CYCLE_WITH_EI_DELAY);
+    let delayed = span(documented);
+    // The pin must sit inside the documented range (the EI delay has landed, so the delayed cycle applies).
+    assert!(
+        (documented.0..=documented.1).contains(&C4_ENTRIES_PER_ASSERT_TODAY),
+        "the C4 pin {C4_ENTRIES_PER_ASSERT_TODAY} is outside the documented {delayed}"
+    );
     assert_eq!(
         entries,
         asserts * C4_ENTRIES_PER_ASSERT_TODAY,
         "C4 moved: {entries} handler entries over {asserts} asserts. Pinned {C4_ENTRIES_PER_ASSERT_TODAY} per \
-         assert (today, WRONG by R6). Documented, MEDIUM confidence (R6's level corollary, which parcel 4 \
-         needs a ruling on): the line is a level for one line, so this handler is re-entered {plain} times \
-         per assert with no EI delay, {delayed} with parcel 3's"
+         assert (parcel 4). Documented, MEDIUM confidence (R6's level corollary, card d-51): the line is a \
+         level for one line, so this handler is re-entered {plain} times per assert with no EI delay, \
+         {delayed} with parcel 3's. 1 per assert is acceptance consuming the line again"
     );
 }

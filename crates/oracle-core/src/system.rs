@@ -543,6 +543,17 @@ pub struct System {
     /// `frame_boundary_mclk`) so the chase resumes exactly across snapshot/restore; **not** in `export_state`
     /// or `state_hash` (a timing scalar). Power-on 0.
     z80_frontier_mclk: u64,
+    /// **The instant the Z80's `/INT` pulse ends** (M24 parcel 4): the last `VInt`'s assert instant plus one
+    /// line, `MCLK_PER_LINE` mclk. The Genesis holds the Z80's `/INT` for exactly one scanline, whether or
+    /// not the Z80 takes it (`docs/2026-07-16-vdp-recon.md` R6: MacDonald, SpritesMind t=740, "asserted
+    /// every frame for exactly one scanline"; Eke, t=787, "cleared on next line ... regardless of
+    /// interrupts being masked on Z80 side or not", which its author marks unconfirmed and R6 grades
+    /// MEDIUM). [`catch_up_z80`](System::catch_up_z80) drops the line before any Z80 step whose boundary,
+    /// on the Z80's own frontier, is at or past this instant, so a Z80 that had interrupts masked, or was
+    /// held off the bus by a 68000 grant, for the whole line misses that frame's interrupt. Power-on 0 (no
+    /// pulse). A timing scalar like `z80_frontier_mclk`: it rides this bincode snapshot for determinism,
+    /// and is **not** in `export_state` or `state_hash`.
+    z80_int_until_mclk: u64,
     /// The Z80's 9-bit bank-address register (`$6000`), serial-loaded LSB-first, selecting the 32 KiB 68000
     /// page the Z80's `$8000-$FFFF` window maps to (Plutiedev "Z80 banking"). A bus-arbitration-class scalar
     /// like `z80_busreq`: rides this bincode snapshot for determinism, **not** emitted by `export_state`.
@@ -601,6 +612,7 @@ impl std::fmt::Debug for System {
             .field("frame_boundary_mclk", &self.frame_boundary_mclk)
             .field("z80", &self.z80)
             .field("z80_frontier_mclk", &self.z80_frontier_mclk)
+            .field("z80_int_until_mclk", &self.z80_int_until_mclk)
             .field("z80_bank", &self.z80_bank)
             .field("fm", &self.fm)
             .field(
@@ -721,6 +733,7 @@ impl System {
             frame_boundary_mclk: 0,
             z80: Z80::new(),
             z80_frontier_mclk: 0,
+            z80_int_until_mclk: 0,
             z80_bank: 0,
             fm: Ym2612::new(),
             scanline_scaffold: ScanlineScaffold::default(),
@@ -1763,11 +1776,8 @@ impl System {
                     let off = self.vdp.vint_offset();
                     self.scheduler.schedule(deadline + off, EventKind::VInt);
                 }
-                // Deassert the Z80 `/INT` line at the top of a new frame (ZC14): the VDP pulses the Z80 vblank
-                // interrupt for the vblank period, so an un-accepted request does not linger across frames.
-                if line == 0 {
-                    self.z80.set_int_line(false);
-                }
+                // (The Z80's `/INT` is no longer dropped here at line 0: M24 parcel 4 drops it one line after
+                // the assert, on the Z80's own clock, in `catch_up_z80`; see `z80_int_until_mclk`.)
                 self.scheduler
                     .schedule(deadline + MCLK_PER_LINE, EventKind::Scanline);
             }
@@ -1782,11 +1792,16 @@ impl System {
                 }
             }
             // VInt raises the 68000's vblank IPL *and* asserts the Z80's `/INT` line (ZC14): on the Genesis the
-            // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it once its driver has run `EI`
-            // and the one instruction after it (the `EI` shadow, UM0080 p.18; `Z80::step`).
+            // same vblank drives both CPUs' vblank interrupts. The Z80 accepts it at any instruction boundary
+            // inside the one-line pulse where its driver has run `EI` and the one instruction after it (the
+            // `EI` shadow, UM0080 p.18; `Z80::step`). The pulse ends one line after THIS event's own instant
+            // (R6), measured against the Z80's frontier in `catch_up_z80` (M24 parcel 4). The event is
+            // delivered at the first 68000 boundary at or past `deadline`, so the Z80 still sees the assert
+            // up to one 68000 instruction late (the design's late-view note); the deassert is not late.
             EventKind::VInt => {
                 self.vdp.raise_vint();
                 self.z80.set_int_line(true);
+                self.z80_int_until_mclk = deadline + MCLK_PER_LINE;
                 #[cfg(feature = "z80-census")]
                 crate::z80_census::note_assert(deadline);
             }
@@ -1922,11 +1937,20 @@ impl System {
                 ram,
                 z80_bank,
                 z80_frontier_mclk,
+                z80_int_until_mclk,
                 fm,
                 vdp,
                 ..
             } = self;
             while *z80_frontier_mclk < now {
+                // M24 parcel 4: the `/INT` pulse is one line wide (R6). The Z80 samples it at this boundary,
+                // at its own frontier, so once that is a line past the assert the line is down, however
+                // the Z80 got there: interrupts masked, or a 68000 bus grant that spanned the window (the
+                // grant arm below moves the frontier and steps nothing, so the first boundary after the
+                // release lands here already past the pulse).
+                if *z80_frontier_mclk >= *z80_int_until_mclk {
+                    z80.set_int_line(false);
+                }
                 // The Z80 reads the FM timer at its own frontier (ZC4/FM7) — behind the 68000's `now`, both
                 // absolute on the one timeline. Pass the frontier value at the start of this step as the FM's
                 // `now`. The VDP port mirror ($7F04+) reads at the same frontier instant (K2).
@@ -3600,7 +3624,11 @@ mod tests {
     /// A Z80 caught between an `EI` and the instruction after it (M24's `EI` shadow), with interrupts enabled
     /// and a request pending. Program at `$0100`: `INC A` ×3, `JR $`; the IM 1 handler at `$0038` stores `A`
     /// at `$1000` and halts. `$1000` starts at `$FF`, so "not taken yet" reads apart from `A = 0`. Set up two
-    /// lines into the frame, so the frame-top deassert (line 0) cannot clear the request under the test.
+    /// lines into the frame, far from the frame's own `VInt`.
+    ///
+    /// The `/INT` line is raised the way `System`'s `VInt` arm raises it (M24 parcel 4): a one-line pulse
+    /// asserted at the rig's instant, so it ends `MCLK_PER_LINE` mclk later on the Z80's clock (R6). Before
+    /// parcel 4 the rig raised only the level, which then stayed up until taken.
     fn z80_inside_the_ei_shadow() -> System {
         use crate::z80::{Z80Regs, Z80};
         let mut s = booted(0xE1);
@@ -3619,6 +3647,7 @@ mod tests {
             ..Default::default()
         });
         s.z80.set_int_line(true);
+        s.z80_int_until_mclk = s.scheduler().now() + MCLK_PER_LINE;
         s.z80_running = true;
         s
     }
@@ -3664,12 +3693,17 @@ mod tests {
     /// only inside `Z80::step`, in the same call that runs the instruction after `EI`, so the acceptance test at
     /// the top of the next step is the first place it is read. Held off the bus with the request pending, the
     /// core takes nothing; released, it runs the one `INC A` and only then takes the request.
+    ///
+    /// The grant is a third of a line, so the release comes with most of the one-line `/INT` pulse still to
+    /// run (M24 parcel 4; R6). Until parcel 4 it was 20,000 mclk, which only a "held until taken" request
+    /// survives: the grant that spans the whole pulse is its own test,
+    /// [`a_bus_grant_that_spans_the_whole_int_pulse_loses_that_frames_interrupt`].
     #[test]
     fn a_bus_grant_inside_the_ei_shadow_neither_consumes_nor_loses_it() {
         let mut s = z80_inside_the_ei_shadow();
         s.z80_busreq = true;
         let t = s.scheduler().now();
-        s.run_until(t + 20_000);
+        s.run_until(t + MCLK_PER_LINE / 3);
         assert_eq!(
             s.z80_ram[0x1000], 0xFF,
             "nothing was taken while the 68000 held the bus"
@@ -3683,6 +3717,38 @@ mod tests {
         assert_eq!(
             s.z80_ram[0x1000], 1,
             "released: one INC A ran, then the request was taken"
+        );
+    }
+
+    /// **A bus grant that spans the whole `/INT` pulse loses that frame's interrupt** (M24 parcel 4, the
+    /// behaviour card d-51 is about). R6 holds the Z80's `/INT` for one line whether or not it is taken, and
+    /// a Z80 held off the bus ends no instruction, so it samples nothing (UM0080's BUSREQ and INT pin texts;
+    /// the design's §6.1 names the second half an inference from the manual's silence, not a quotation).
+    /// The same rig as the grant-inside-the-shadow test, but held for 20,000 mclk, about 5.8 lines: on the
+    /// release the pulse is over, so the Z80 runs its three `INC A` and loops, and the handler never runs.
+    /// Before parcel 4 the request waited out the grant and was taken on the release: `$1000 = 1`.
+    #[test]
+    fn a_bus_grant_that_spans_the_whole_int_pulse_loses_that_frames_interrupt() {
+        let mut s = z80_inside_the_ei_shadow();
+        s.z80_busreq = true;
+        let t = s.scheduler().now();
+        s.run_until(t + 20_000);
+        assert!(
+            s.scheduler().now() >= s.z80_int_until_mclk,
+            "UNMEASURABLE: the grant ended before the pulse did"
+        );
+        s.z80_busreq = false;
+        let t = s.scheduler().now();
+        s.run_until(t + 20_000);
+        assert_eq!(
+            s.z80_ram[0x1000], 0xFF,
+            "the pulse ended under the grant, so the handler never ran"
+        );
+        let r = s.z80.regs();
+        assert_eq!(
+            (r.a, r.pc, r.iff1),
+            (3, 0x0103, true),
+            "released after the pulse: the three INC A ran and the Z80 loops at JR $ with interrupts still on"
         );
     }
 
