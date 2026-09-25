@@ -644,6 +644,8 @@ impl Z80 {
             !self.ei_shadow,
             "acceptance inside the EI shadow (UM0080 p.18)"
         );
+        #[cfg(feature = "z80-census")]
+        crate::z80_census::note_accept();
         self.halted = false;
         self.iff1 = false;
         self.iff2 = false;

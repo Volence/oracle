@@ -13,6 +13,9 @@ description = "Deterministic, no-I/O Sega Genesis / Mega Drive emulation core fo
 # vendored FM core) out of the default build the currency gates compile. Currency-neutrality itself comes
 # from the caller-owned sink seam, not the feature — this is belt-and-suspenders isolation.
 synth = []
+# The Z80 `/INT` census (`src/z80_census.rs`): a thread-local instrument for the d-51 listening kit.
+# Default OFF, and without it the module and its call sites do not exist.
+z80-census = []
 
 [dependencies]
 bincode = { version = "2", features = ["derive"] }

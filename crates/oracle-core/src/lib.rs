@@ -40,3 +40,6 @@ pub mod vgm;
 pub mod watchpoints;
 pub mod ym2612;
 pub mod z80;
+/// The listening kit's `/INT` census (d-51); feature `z80-census`, default off.
+#[cfg(feature = "z80-census")]
+pub mod z80_census;

@@ -1787,6 +1787,8 @@ impl System {
             EventKind::VInt => {
                 self.vdp.raise_vint();
                 self.z80.set_int_line(true);
+                #[cfg(feature = "z80-census")]
+                crate::z80_census::note_assert(deadline);
             }
             EventKind::FrameEnd => {}
         }
@@ -1939,12 +1941,16 @@ impl System {
                     *z80_frontier_mclk,
                     sink,
                 );
+                #[cfg(feature = "z80-census")]
+                crate::z80_census::set_frontier(*z80_frontier_mclk);
                 let t = z80.step(&mut bus);
                 *z80_frontier_mclk += t as u64 * MCLK_PER_Z80_CYCLE;
             }
         } else if self.z80_running {
             // Bus granted: run nothing, and keep the tail of the instruction the grant cut owed — it is
             // time the Z80 spends after the release (see the doc above).
+            #[cfg(feature = "z80-census")]
+            crate::z80_census::note_grant(step_start, now);
             let tail = self.z80_frontier_mclk.saturating_sub(step_start);
             self.z80_frontier_mclk = now + tail;
         } else {
