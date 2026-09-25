@@ -1,5 +1,5 @@
 {
-  "focus": "Booted fresh. Nothing buildable is left; everything on this lane waits on your eyes or two of your cards.",
+  "focus": "Booted again; nothing buildable is left. Everything here waits on your eyes or on two of your cards.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: booted, nothing running, nothing unbanked. No new work since 09-19 in this repo or any peer's.",
+  "nextBoundary": "Here now: booted, nothing running, nothing unbanked. Nothing new in this repo since 09-19.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -104,7 +104,7 @@
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
     }
   ],
-  "awaiting": "your go on what to do. Cheapest first: d-54 (one answer releases 67 held rows); otherwise I can chase the cancelled CI run or the controller-port bit, which need nobody.",
+  "awaiting": "your go. Cheapest for you: answer d-54 (releases 67 held rows). Needing nobody: chase the cancelled CI run or the controller-port bit.",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T05:40:13Z"
+  "updatedAt": "2026-09-25T05:59:25Z"
 }
