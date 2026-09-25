@@ -1,19 +1,35 @@
 {
-  "focus": "Booted again; nothing buildable is left. Everything here waits on your eyes or on two of your cards.",
-  "inFlight": [],
+  "focus": "Working overnight on your go: marking cut panel lines, two small puzzles, and a before/after sound kit for you.",
+  "inFlight": [
+    {
+      "what": "Put the '...' mark on panel lines cut by a table wider than its pane (no wrapping, no layout change)",
+      "where": "branch parcel/panel-clip-mark-box",
+      "agent": true
+    },
+    {
+      "what": "Find out why one automated test run was cancelled partway",
+      "where": "branch parcel/ci-run-cancelled",
+      "agent": true
+    },
+    {
+      "what": "Settle which answer is right for the controller-port bit we disagree on",
+      "where": "branch parcel/io-data-bit7",
+      "agent": true
+    },
+    {
+      "what": "Build the sound-interrupt change on a side branch plus a before/after listening kit; nothing lands until you listen",
+      "where": "branch side/d51-int-level-listen",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
       "since": "2026-09-14",
       "id": "d-51"
-    },
-    {
-      "what": "Whether long panel lines should wrap or the panes get wider, now that cut lines will at least say they were cut",
-      "since": "2026-09-17",
-      "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now: booted, nothing running, nothing unbanked. Nothing new in this repo since 09-19.",
+  "nextBoundary": "When the four agents return and their work is checked and landed (the sound kit stays on its side branch).",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -25,15 +41,15 @@
     },
     {
       "id": "PANEL-CLIP-MARK",
-      "state": "next",
+      "state": "doing",
       "size": "S",
-      "blockedBy": "your card d-54",
+      "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
-      "title": "What I would take the moment you answer d-54: 67 panel rows whose text is cut by a whole table or control wider than its pane."
+      "title": "Hub ruled d-54 mark-only: the 67 panel lines cut by a table or control wider than its pane get the '...' mark. Wrap and widths stay yours."
     },
     {
       "id": "F-CI-RUN-CANCELLED-UNEXPLAINED",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -41,7 +57,7 @@
     },
     {
       "id": "F-IO-DATA-BIT7",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -57,15 +73,15 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "blocked",
+      "state": "doing",
       "size": "S",
-      "blockedBy": "your ear: card d-51",
+      "blockedBy": "your ear: card d-51 (kit being built; lands only after you listen)",
       "project": "LENS-PASS",
       "title": "The sound chip's interrupt signal should last one line, not until taken. It changes what a real driver hears, so card d-51 asks whether you want to listen first."
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -104,7 +120,7 @@
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
     }
   ],
-  "awaiting": "your go. Cheapest for you: answer d-54 (releases 67 held rows). Needing nobody: chase the cancelled CI run or the controller-port bit.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-25T05:59:25Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-25T06:57:07Z"
 }
