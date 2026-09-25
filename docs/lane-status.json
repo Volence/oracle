@@ -15,6 +15,11 @@
       "what": "Build the sound-interrupt change on a side branch plus a before/after listening kit; nothing lands until you listen",
       "where": "branch side/d51-int-level-listen",
       "agent": true
+    },
+    {
+      "what": "A checker that says a test run passed only when every part really passed, plus a time limit on the long test job",
+      "where": "branch parcel/ci-verdict-tool",
+      "agent": true
     }
   ],
   "blockedOnOwner": [
@@ -108,7 +113,7 @@
     },
     {
       "id": "F-CI-VERDICT-TOOL",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -117,5 +122,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T07:06:38Z"
+  "updatedAt": "2026-09-25T07:07:12Z"
 }
