@@ -1489,6 +1489,19 @@ list first. `## Where the detail lives` at the foot of this file says which of t
   latch's own bit 7, so we answer `$FF` where it answers `$7F` on **every pad read a normal game performs**. Recorded in
   `tools/blastem-differential/known_differences.py` as the **one entry that deliberately does NOT pin ours as right**: the port has seven I/O pins
   so no pin corresponds to bit 7, neither side has a citation, and the `315-5309` wiki contradicts itself. Q1 is untouched (bits 5 and 6 agree).
+  ▶ **`F-IO-DATA-BIT7` — ✅ SETTLED 2026-09-25 (branch `parcel/io-data-bit7`) FOR THE LATCH, and ours was the one that was wrong.** Data bit 7
+  reads back whatever was last written there, whatever Control says. That is outcome (a), with a **mechanism**, not an assertion: the YM6046 /
+  315-5309 **die netlist** (`emu-russia/SEGAChips` `IOChip/IO.v` @ `6ec064e`) feeds register 1's bit 7 on the read mux from the Q of flip-flop
+  `g_87`, which is clocked by the Port A Data write strobe with D = data-bus bit 7, and it drives VD7 on the same enable as VD0-6, so the read
+  is **not open bus**. **Nuked-MD** (`iochip.c` @ `9c219b3`, a different die: FC1004) does the same: `if (port_a.p_data.q & 128) read_data |= 128`.
+  **Charles MacDonald's console-checked `gen-hw.txt` §3.1** measures it: `$7F` → write `$80` → `$FF` → write `$00` → `$7F`. All seven
+  emulators read (BlastEm, GPGX, MAME, Picodrive, ares, Exodus, jgenesis) agree, and GPGX and MAME copy MacDonald's text word for word. No
+  source anywhere supports "constant 1". Our core now takes Data bit 7 from the latch (`DATA_LATCH_ONLY` in `io.rs`) and agrees with BlastEm
+  **whole-byte** on `th_pullup.bin`, so `known_differences.py`'s `io-data-bit7` entry was **removed**. The gates are
+  `data_bit_7_follows_the_latch_through_the_bus` and `data_bit_7_is_the_latch_on_every_port_whatever_control_says`, both red-first against
+  `d1cdc48`. Games now read `$7F`/`$33` for a released pad, not `$FF`/`$B3`. ⚑ **Side finding, not acted on:** the Data flip-flops'
+  `nRES` is tied high (Control's reset from `/SRES`), so on hardware a **reset-button press keeps the Data latch**. Our `System::reset` is a
+  power cycle, so nothing changes today. A future soft-reset path must keep the latch. Full record: `docs/2026-09-25-io-data-bit7.md`.
   *Original booking follows, superseded:*
 * **F-TH-PULLUP-UNDISCRIMINATED — no corpus ROM discriminates the undriven-TH pull direction.** (Registered
   2026-09-19 by `TESTROM-H40-HALF`, which needed the rule and found nothing exercising it. **Code anchor:

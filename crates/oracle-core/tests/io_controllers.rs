@@ -98,9 +98,9 @@ const OBS: usize = 0x8000;
 const DONE: usize = 0x8010;
 
 /// The bytes BlastEm 0.6.2 wrote for observables +0..+11, recorded 2026-09-18 by
-/// `python3 tools/blastem-differential/run_th_pullup.py` with nothing held on the pad. Bit 7 is a separate,
-/// unresolved cell (see `bit_7_of_the_data_register_is_a_recorded_divergence`); bits 6-0 are the pull
-/// question and its controls.
+/// `python3 tools/blastem-differential/run_th_pullup.py` with nothing held on the pad. Bit 7 is a separate
+/// cell, settled 2026-09-25 for the latch (see `data_bit_7_follows_the_latch_through_the_bus`); bits 6-0
+/// are the pull question and its controls.
 ///
 /// +0  `$A10003` pristine        `$7F`  bits 6-0 all high  → TH READS HIGH while an input
 /// +1  `$A10009` pristine        `$00`  premise: Control powers on at `$00`, observed not assumed
@@ -192,47 +192,111 @@ fn undriven_th_reads_high_in_both_models() {
     );
 }
 
-/// **Bit 7 of the Data register is a recorded divergence, not a settled cell** — and this test pins the
-/// disagreement rather than either answer, so that changing our side is loud.
-///
-/// The port has seven I/O pins: Control is bits 6-0 and its bit 7 is the TH-interrupt enable, so no pin
-/// corresponds to Data bit 7 at all. Recon IO4's table asserts it reads `1` ("pull-up, undriven") and
-/// `pad_device_byte` implements that unconditionally. BlastEm 0.6.2 instead hands back **the Data latch's
-/// own bit 7**: `0` at every observable until the ROM writes `$C0`/`$80`, then `1` — and independently of
-/// the Control register, which has no direction bit for it.
-///
-/// Neither side is corroborated by a permitted source: Plutiedev's I/O-ports and Controllers pages do not
-/// mention bit 7 of the register at all. So this is booked as **F-IO-DATA-BIT7** rather than fixed, with
-/// the same standing as `tools/blastem-differential/known_differences.py`'s STOP×trace entry.
-///
-/// If you are here because this test went red: you have changed our bit-7 behaviour. That is a
-/// core-behaviour decision that needs the row closed on evidence first — re-run `run_th_pullup.py`, record
-/// the new table, and amend IO4 — not a table edit.
+// ---------------------------------------------------------------------------------------------------
+// F-IO-DATA-BIT7 — Data-register bit 7 reads back the Data latch's own bit 7. SETTLED 2026-09-25.
+// ---------------------------------------------------------------------------------------------------
+//
+// The port has seven I/O pins (PA0-PA6 / PB0-PB6 / PC0-PC6 on the YM6046 pinout), so no pin corresponds to
+// Data bit 7. What the chip hands back for it was booked as unresolved on 2026-09-19 (ours forced `1`,
+// BlastEm returned the latch). `docs/2026-09-25-io-data-bit7.md` settles it for THE LATCH, on a mechanism:
+//
+//   * DIE NETLIST (YM6046 / 315-5309, `emu-russia/SEGAChips` `IOChip/IO.v` @ 6ec064e): the 68000-mode
+//     read mux for register 1 ($A10003) takes bit 7 straight from the Q of flip-flop `g_87`, whose D is
+//     internal data-bus bit 7 and whose clock `w142` is the Port A Data write strobe shared with the other
+//     seven bits of that register. No pin, no pull, no constant on that path.
+//   * DIE-DERIVED EMULATOR (Nuked-MD `iochip.c` @ 9c219b3, FC1004 decap): `if (port_a.p_data.q & 128)
+//     read_data |= 128;` — likewise for ports B and C.
+//   * HARDWARE MEASUREMENT (Charles MacDonald, "Sega Genesis hardware notes" v0.8, section 3.1, "checked on
+//     the real thing"): "Bit 7 isn't connected to any pin on the I/O port. It will latch a value written to
+//     it", with the listing `$7F` → write `$80` → `$FF` → write `$00` → `$7F`.
+//
+// THE EXPECTATIONS BELOW ARE THOSE SOURCES' BYTES, not our core's output. MacDonald's listing is asserted
+// verbatim; the netlist's rule (bit 7 = latch bit 7 whatever Control says) is asserted across Control values.
+
+/// MacDonald's listing through the real bus, on the committed `th_pullup.bin`: its observables +0 (pristine
+/// read), +11 (`$80` latched, Control `$00`) and +8 (`$00` latched, Control `$00`) are exactly his three reads,
+/// `$7F` / `$FF` / `$7F`. And with bit 7 settled, **every** observable now agrees with BlastEm 0.6.2 byte for
+/// byte — the whole-byte form of `undriven_th_reads_high_in_both_models`.
 #[test]
-fn bit_7_of_the_data_register_is_a_recorded_divergence() {
+fn data_bit_7_follows_the_latch_through_the_bus() {
     let ours = th_pullup_observables();
-    for i in [0usize, 5, 6, 7, 8, 10, 11] {
+    assert_eq!(
+        (ours[0], ours[11], ours[8]),
+        (0x7F, 0xFF, 0x7F),
+        "MacDonald gen-hw.txt 3.1: `move.b $A10003,d0 ; D0 = $7F` / after `move.b #$80` `D0 = $FF` / after \
+         `move.b #$00` `D0 = $7F`. Bit 7 is the Data latch's bit 7 (YM6046 netlist g_87; Nuked-MD p_data.q & 128)."
+    );
+    for i in 0..12 {
         assert_eq!(
-            ours[i] & 0x80,
-            0x80,
-            "observable +{i}: our bit 7 is 0. Ours is documented (recon IO4) as always 1; changing it is \
-             F-IO-DATA-BIT7's to decide, and closing that row means re-recording BLASTEM_OBSERVED too."
+            ours[i], BLASTEM_OBSERVED[i],
+            "observable +{i}: whole byte ${:02X} here vs ${:02X} in BlastEm 0.6.2 — F-IO-DATA-BIT7 closed the \
+             one cell where they differed, so any disagreement now is new.",
+            ours[i], BLASTEM_OBSERVED[i]
         );
     }
-    // And the divergence itself: BlastEm read bit 7 low exactly where the ROM had not latched a 1 there.
-    for i in [0usize, 5, 6, 7, 8] {
+}
+
+/// The netlist's rule directly on the register block, on every port: Data bit 7 is the last value written
+/// there, **independently of Control** (Control bit 7 is the TH-interrupt enable, not a direction bit, and the
+/// read path for Data bit 7 does not pass through any Control flip-flop), and independently of the pad.
+#[test]
+fn data_bit_7_is_the_latch_on_every_port_whatever_control_says() {
+    use oracle_core::io::{Io, Pad, PadPort, Port};
+    for port in Port::ALL {
+        // MacDonald's listing verbatim, Control pristine at $00, nothing plugged/pressed.
+        let mut io = Io::default();
         assert_eq!(
-            BLASTEM_OBSERVED[i] & 0x80,
-            0x00,
-            "the recorded BlastEm table must still carry the divergence this test names at +{i}; if it no \
-             longer does, the table was edited without re-running the rig"
+            io.read_data(port),
+            0x7F,
+            "{port:?}: pristine read is $7F (gen-hw.txt 3.0/3.1)"
         );
+        io.write_data(port, 0x80);
+        assert_eq!(io.read_data(port), 0xFF, "{port:?}: after writing $80, $FF");
+        io.write_data(port, 0x00);
+        assert_eq!(io.read_data(port), 0x7F, "{port:?}: after writing $00, $7F");
+
+        // Bit 7 = latch bit 7 for every Control value, including Control bit 7 (TH-int enable) set and
+        // clear, TH an input or an output, and all seven pins outputs.
+        for ctrl in [0x00u8, 0x40, 0x80, 0xC0, 0x7F, 0xFF] {
+            for latch in [0x00u8, 0x40, 0x80, 0xC0, 0x7F, 0xFF] {
+                let mut io = Io::default();
+                if let Some(p) = port.pad_port() {
+                    // A pressed pad must not reach bit 7 either: the pad drives seven pins at most.
+                    io.set_pad(
+                        p,
+                        Pad {
+                            start: true,
+                            c: true,
+                            up: true,
+                            ..Pad::default()
+                        },
+                    );
+                }
+                io.write_ctrl(port, ctrl);
+                io.write_data(port, latch);
+                assert_eq!(
+                    io.read_data(port) & 0x80,
+                    latch & 0x80,
+                    "{port:?} ctrl=${ctrl:02X} latch=${latch:02X}: Data bit 7 must be the latch's bit 7"
+                );
+            }
+        }
     }
-    for i in [10usize, 11] {
-        assert_eq!(
-            BLASTEM_OBSERVED[i] & 0x80,
-            0x80,
-            "+{i}: BlastEm's bit 7 follows the latch, so it must read 1 once the ROM has latched one there"
-        );
-    }
+    // The normal game read: Control $40, TH driven high then low, nothing pressed. Bits 6-0 are recon IO4's
+    // nibbles; bit 7 is the `0` the game latched. `$7F` / `$33`, as BlastEm recorded at +6 / +7.
+    let mut io = Io::default();
+    io.set_pad(PadPort::P1, Pad::default());
+    io.write_ctrl(Port::P1, 0x40);
+    io.write_data(Port::P1, 0x40);
+    assert_eq!(
+        io.read_data(Port::P1),
+        0x7F,
+        "TH high, released: ?1CBRLDU with ? = latched 0"
+    );
+    io.write_data(Port::P1, 0x00);
+    assert_eq!(
+        io.read_data(Port::P1),
+        0x33,
+        "TH low, released: ?0SA00DU with ? = latched 0"
+    );
 }

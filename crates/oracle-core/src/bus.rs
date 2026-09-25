@@ -2419,12 +2419,14 @@ mod tests {
         bus.write8(0xA1_0009, 5, 0x40);
         // TH=1: Start is on the TH=0 nibble, so it must NOT appear here — the C/B/R/L/D/U set reads released.
         bus.write8(0xA1_0003, 5, 0x40);
+        // Bit 7 has no pin and reads back the latched 0 (F-IO-DATA-BIT7), so the byte is $7F.
         assert_eq!(
             bus.read8(0xA1_0003, 5).0,
-            0xFF,
+            0x7F,
             "TH=1: nothing pressed in the C/B/R/L/D/U set"
         );
-        // TH=0: bit 5 (Start) reads low; bits 3,2 forced low (detection signature); read = 0x93.
+        // TH=0: bit 5 (Start) reads low; bits 3,2 forced low (detection signature); bit 7 the latched 0;
+        // read = 0x13.
         bus.write8(0xA1_0003, 5, 0x00);
         let lo = bus.read8(0xA1_0003, 5).0;
         assert_eq!(lo & 0x20, 0, "Start pressed (bit 5 = 0)");
@@ -2433,7 +2435,7 @@ mod tests {
             0,
             "bits 3,2 forced low (MD-pad detection signature)"
         );
-        assert_eq!(lo, 0x93);
+        assert_eq!(lo, 0x13);
         // The version register is untouched by the wiring.
         assert_eq!(
             bus.read8(0xA1_0001, 5).0,
