@@ -1,6 +1,12 @@
 {
   "focus": "Landed: the effects panel reads aeon's published band size. Your listens and looks are still waiting.",
-  "inFlight": [],
+  "inFlight": [
+    {
+      "what": "Waiting for the online test run on the band-size landing to finish",
+      "where": "own: tools/ci-verdict.py --wait on efc6675",
+      "agent": false
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here, once this landing is pushed and CI reads green.",
+  "nextBoundary": "When the online test run on the band-size landing reads green; then the bank-switching address question.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -44,9 +50,9 @@
     },
     {
       "id": "LENS-WAVE-1",
-      "state": "open",
+      "state": "blocked",
       "size": "L",
-      "blockedBy": null,
+      "blockedBy": "your eyes: the two look-at-it questions in its title",
       "project": "LENS-PASS",
       "title": "Sweep wave 1: both measured fixes landed today. Left: two look-at-it questions for you (how an unreadable save is shown; which rule the two address boxes share)."
     },
@@ -85,5 +91,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T11:26:05Z"
+  "updatedAt": "2026-09-25T12:15:36Z"
 }
