@@ -1,5 +1,5 @@
 {
-  "focus": "Two contract proposals are with the hub: bank-switching (mostly ruled) and sound-chip watches.",
+  "focus": "The hub accepted the sound-chip watch fix; building it is next, together with aeon. Ready for a clear first.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here. Nothing is running; both drafts are pushed and with the hub.",
+  "nextBoundary": "Here. Nothing is running; the next session builds the sound-chip watch fix with aeon.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -36,11 +36,11 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "blocked",
+      "state": "next",
       "size": "M",
-      "blockedBy": "the hub ruling on the drafted contract change",
+      "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Sound-chip writes come back from a watch under a wrong address. A fix is drafted and with the hub; building waits on its ruling."
+      "title": "Build the accepted sound-chip watch fix: report its writes at the right address, update our contract copy, and move in step with aeon's tool."
     },
     {
       "id": "LENS-WAVE-1",
@@ -75,7 +75,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
+  "awaiting": "a clear: nothing is unbanked and this session is at about 196k tokens by the transcript's usage record. The next session builds the sound-chip watch fix.",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T14:55:32Z"
+  "updatedAt": "2026-09-25T14:58:32Z"
 }
