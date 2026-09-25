@@ -260,6 +260,25 @@ MAP = {
 }
 
 
+def trigger_map(doc):
+    """`{trigger: its config or None}` for one parsed workflow document.
+
+    The one place a workflow's `on:` is read. `tools/ci-verdict.py` imports it to decide which
+    workflows a push must have run, so this tool and that one cannot disagree about what "push-
+    triggered" means. The config is kept (not just the key) because a `push:` with `branches:` or
+    `paths:` filters may legitimately not run, and the verdict tool has to be able to say so.
+    """
+    # YAML 1.1 reads a bare `on:` key as the boolean True. Both spellings, always.
+    trig = doc.get("on", doc.get(True))
+    if isinstance(trig, dict):
+        return {str(k): v for k, v in trig.items()}
+    if isinstance(trig, list):
+        return {str(t): None for t in trig}
+    if trig is None:
+        return {}
+    return {str(trig): None}
+
+
 def load_workflows(root):
     """Every workflow, with its triggers and its steps. Parsed, never grepped."""
     d = os.path.join(root, WORKFLOW_DIR)
@@ -273,16 +292,7 @@ def load_workflows(root):
             doc = yaml.safe_load(fh)
         if not isinstance(doc, dict):
             continue
-        # YAML 1.1 reads a bare `on:` key as the boolean True. Both spellings, always.
-        trig = doc.get("on", doc.get(True))
-        if isinstance(trig, dict):
-            triggers = sorted(trig.keys())
-        elif isinstance(trig, list):
-            triggers = sorted(str(t) for t in trig)
-        elif trig is None:
-            triggers = []
-        else:
-            triggers = [str(trig)]
+        triggers = sorted(trigger_map(doc).keys())
         out.append((name, triggers, doc.get("jobs") or {}))
     return out
 

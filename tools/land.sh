@@ -164,6 +164,10 @@
 #                                  pick their toolchain. It exits 1 on an unreadable floor, which on
 #                                  a runner fails the step; nothing local ran it, so a broken floor
 #                                  declaration was a CI-only red.
+#   G0c CI verdict reader          `tools/test_ci_verdict.py`: the offline proof that
+#                                  `tools/ci-verdict.py` (the post-push CI reader) refuses cancelled,
+#                                  failure, timed_out, ... and no-run, over recorded real runs. No
+#                                  network. Under a second.
 #   G1  vendor precondition        a fresh worktree has no `vendor/` symlink, and without it the
 #                                  SingleStepTests sweep SKIPS AND PASSES VACUOUSLY. Its failure
 #                                  mode is a silent green — exactly what a human-read checklist is
@@ -557,6 +561,26 @@ if RUST_FLOOR="$(./tools/rust-floor.sh 2>"$RUN_DIR/rust-floor.err")" && [ -n "$R
 else
     fail "G0b ./tools/rust-floor.sh produced no floor; on CI this fails the step in all three jobs"
     command cat "$RUN_DIR/rust-floor.err"
+    finish_red
+fi
+
+# --------------------------------------------------------------------------------------------
+# G0c  the CI verdict reader's own proof  (./tools/test_ci_verdict.py — offline, recorded API JSON)
+#
+# `tools/ci-verdict.py <sha>` is how a landing's CI result is read AFTER the push (exit 0 only when
+# every push run for the SHA concluded success; cancelled/failure/... name themselves; NO-RUN is
+# refused next to a positive control). This command never queries GitHub, so it does not run the
+# live tool. It runs the tool's JUDGEMENT over responses the tool itself recorded from real runs
+# (2414223 cancelled, 7d56eb6 green, ddf4b1e no-run), plus one-field mutations of the green. No
+# network; well under a second. A reader that has started calling `cancelled` green reddens HERE,
+# before the landing it would later misread.
+# --------------------------------------------------------------------------------------------
+hr; echo "G0c CI verdict reader (./tools/test_ci_verdict.py — offline, over recorded runs)"
+if python3 ./tools/test_ci_verdict.py > "$RUN_DIR/ci-verdict-test.log" 2>&1; then
+    pass "G0c $(command tail -1 "$RUN_DIR/ci-verdict-test.log") ($(command grep -c '^  \[ok  \]' "$RUN_DIR/ci-verdict-test.log") cases)"
+else
+    fail "G0c tools/ci-verdict.py's judgement no longer refuses what it must (or a recorded revision is unreachable)"
+    command cat "$RUN_DIR/ci-verdict-test.log"
     finish_red
 fi
 

@@ -35,6 +35,20 @@ jobs:
     name: Build, test, clippy, fmt
     runs-on: ubuntu-latest
     needs: determinism-gate
+    # MEASURED, NOT GUESSED (2026-09-25, every run of this workflow in the API, created 2026-07-16
+    # to 2026-09-25: 930 runs, 365 in which this job concluded success). Green job wall time:
+    # median 36 min, p90 43, p99 50, max 67 (run 34337714302, 2026-09-09; its Test step alone was
+    # 65). Since 2026-09-12 the max is 57, which is why a two-week window under-reads the tail.
+    # No failed run of this job took over 38 min, and the one cancelled run 19.
+    #
+    # 120 = about 1.8x the slowest green ever seen and over 3x the median: headroom for a suite
+    # that keeps growing, while a real hang now stops at two hours instead of GitHub's six.
+    # ⚑ A job that hits this ends `cancelled` with "exceeded the maximum execution time" in its
+    #   annotations — `tools/ci-verdict.py` refuses it like any other non-success. If green runs
+    #   start landing within ~25% of the bound, re-measure and raise it; do not read the timeout as
+    #   the defect. Re-derive with the job/step timings from
+    #   `gh api repos/Volence/oracle/actions/runs/<id>/jobs`.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Read the declared Rust floor
@@ -167,9 +181,8 @@ jobs:
       # which has ever executed on a runner. `tools/land.sh` runs the same suite locally in ~25 min,
       # but in RELEASE (G7) whereas this is debug, so debug is the unmeasured direction.
       #
-      # No `timeout-minutes` is set here deliberately: GitHub's 360-minute default will not be
-      # reached, and a tighter bound picked before anyone has seen the real number would be a red
-      # invented rather than measured. Set one once the first green run says what the number is.
+      # The job's `timeout-minutes` (on `build-test-lint` above) was left unset until green runs said
+      # what the number is; it is now set from them. See the comment beside it.
       - name: Test
         run: cargo test --workspace
 
