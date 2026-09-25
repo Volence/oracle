@@ -212,3 +212,150 @@ the bank (`memory.rs:1249`).
   - Its `memory_hash` tool description (`:478-487`) still says *"one of two regions"* and that *"a cart-window hash
     matches CRC32 over the ROM-file slice"*. That is a §11.48 paraphrase left standing in a live client. It is not
     this row's to fix, and it is booked in §8.
+
+## 3. Options
+
+Every option is scored on the same four questions: **what a client gains**, **what breaks** for aurora, aeon's tools
+and the MCP shim (§2.4), **the schema and vendoring cost**, and **whether it is right for the HIST rows**. The last
+question is the axis the booking did not name, and it decides most of the options.
+
+**The axis the listed options miss: WHEN the bank is read.** For a NOW field, the mapping in force at reply time is the
+mapping in force when the fact was true. The machine is paused, or the handler samples PC and table in one call (§2.2
+rows 1-8). For a HIST field it is not. A watch hit, a stamp, a profiler row and a census key were captured at some
+earlier access. The window may have been re-pointed since, and on *Sonic Delta Origins* it is re-pointed at the title
+screen (§1). So **any bank read at reply time and attached to a HIST record is a plausible wrong answer**. That is
+exactly the shape §11.48 removed from `read_memory`. Aggregated HIST rows (16, 17, 15, and 20's `hits`) are worse: they
+have already merged two banks' events into one number, and no field added afterwards can split them.
+
+### (i) A bank alongside the address: a typed `cartBanks` snapshot per reply or per event
+
+- **Gains:** a NOW reply becomes self-describing. The client computes `bank*$80000 + (addr & $7FFFF)` itself.
+- **Breaks:** nothing, since it is additive and all three consumers tolerate extra keys (§2.4).
+- **Cost:** the same 8-integer array on roughly 12 fragments, including every `stopped` event and every `step`. That
+  is noise on the hottest replies, and it carries meaning only when a PC or address is in `$080000+`.
+- **HIST:** **wrong.** Attached to `watchpoint_hits`, `get_profiler_frames` or `watchpoint_list`, it describes the
+  table now, not at capture. Capturing it per record instead means 8 bytes per hit in the ring, taken in the watch
+  sink's `on_event`, which is the bus hot path (`BusEvent`, `bus.rs:55-61`, carries no bank). It cannot split a
+  profiler row at all.
+- **Verdict:** keep the *table* (it belongs on `status`, once). **Reject it as the per-reply carrier.**
+
+### (ii) A "banked address" type
+
+- **(ii-a) `{addr, bank}` objects in place of the hex string.** This breaks every consumer. aurora's cast `pc` string,
+  aeon's dict reads and the shim's pretty-printing all change type, and D9 category 1 (*"Addresses … are hex
+  strings"*) is violated. It needs a version bump. **Reject.**
+- **(ii-b) A 32-bit form: the bank in bits 24-31, or the image offset itself in place of `addr`.** The 32-bit spelling
+  is **already taken**. The listing's sign-extended RAM spelling is `0xFFFF_8CFA` (`symbols.rs:367-375`, `raw_addr`),
+  and the contract tells clients to **mask to the 24 address lines** (protocol l.1974-1976, the profiler `addr`). A
+  client that masks, as told, silently drops the bank, and bank `$FF` collides with the RAM spelling. Putting the
+  image offset *in place of* `addr` is §11.48's rejected option (B), *"two vocabularies wearing one name"*
+  (protocol l.5863). **Reject.**
+
+### (iii) Status-only window table, plus a normative "addresses are the bus view at the time of the event"
+
+- **Gains:** almost nothing to build: `status.cartBanks` from `System::cart_banks()` (`system.rs:923`), plus prose. The
+  ambiguity becomes a **documented property instead of a surprise**. History can be reconstructed with existing
+  surfaces: arm a `write` watch on `$A130F3-$A130FF` before the first re-point, and each hit's `value` is a bank with
+  an `mclk` to order it against a record's. That is **(reasoned)**, not run. The overseer measured on 2026-09-11 that
+  a watch on the neighbouring `$A130F1` recorded the ROM's own write (debugread doc §9). `$A130F3+` writes take the
+  same bus write arm (`bus.rs:1330-1345`).
+- **Breaks:** nothing.
+- **Cost:** one key on `status` and one paragraph.
+- **HIST:** documented, not solved. The join recipe works for hits and stamps and **cannot un-merge an aggregate**.
+- **Leaves open:** §11.48 **S1**. Clients still parse `N` out of `"cartridge ROM bank N"`, against §2.4 rule 3 (*"Any
+  consequence a client must act on needs its own typed key"*).
+
+### (iv) Do nothing until a game needs it
+
+- **Gains:** zero cost. It honours the hub's own standing answer (`OVERSEER-LOG.md:13565`: *"its trigger is a banked
+  ROM entering the suite"*).
+- **Breaks:** nothing today.
+- **Costs that are not zero:** **the contract says something false about banked carts, and nothing flags it.**
+  Protocol l.1974-1976 promises that a profiler `addr` is masked *"so a row key and a listing address compare
+  directly"*. On a banked cart a row key is two routines. The acceptance ROM already banks, so a human profiling it in
+  oracle today gets merged rows with no warning. S1 stays an open SHOULD indefinitely.
+
+### Better-approach pass: what the listed options are the floor of
+
+**(v) `romOffset`: one typed companion field, defined once as a §2.4 shared convention.** It is a hex string (D9
+category 1): **the offset into the loaded ROM image of the byte the bus resolved the sibling address to, at the
+moment that address was captured**. It is **present exactly when that address resolved to a cartridge-ROM byte**, so
+absence has one meaning: work RAM, the SRAM overlay's lane, I/O or open bus. Why an *offset* rather than a *bank*:
+
+1. **It is the comparison clients actually make.** A file slice, a CRC, a listing's `lma` (`symbols.rs:667`: *"where
+   the code is stored — the offset in the assembled image"*). Each is one field read, with no
+   `N × $80000 + (addr & $7FFFF)` formula (which §11.48 had to write into prose, l.1173).
+2. **It is mapper-agnostic.** A `bank` number presumes the SSF2 geometry of 512 KiB windows. The mapper note §7
+   already names other mappers (Codemasters, Pier Solar). Under this mapper, bank = `romOffset >> 19`. The reverse
+   derivation needs the geometry.
+3. **Under the identity mapping it equals the address.** Every unbanked client (all of them today) can ignore it, and
+   nothing it already does changes.
+4. **It keeps `addr` a bus address on every row**, which is §11.48 (C)'s principle, and it is additive.
+
+**(vi) The capture discipline as a contract rule, not an implementation detail.** *"Computed from the mapping in
+force when the fact was captured; a server MUST NOT derive it from a later mapping."* This one sentence is what makes
+(v) safe to extend to HIST later. It is also what makes it wrong to put on HIST fields *now* without per-record capture.
+
+**(vii) For HIST, when it is needed: a mapper-write journal instead of per-access capture.** Bank registers are
+written rarely. *Sonic Delta Origins* writes them at the title screen, measured; per-frame or per-access writes are
+not observed. A bounded journal of `(mclk, window, bank)` kept by `System` (snapshot state, like `cart_banks`, so
+restore rewinds it) lets the server resolve a hit's or stamp's `romOffset` **at reply time from the mapping at the
+record's `mclk`**, with **no change to the watch sink or the bus hot path**. Profiler rows are the exception. They
+aggregate at step time, so they must be keyed `(addr, romOffset-or-bank)` in `profiler.rs`, and that is a hot-path
+key change (`on_step_retire`) with a measurable cost. All of this is **wave B**, gated (§4).
+
+**(viii) Bank-qualified CONFIG** (a breakpoint or watch that fires only when its address resolves to a given
+`romOffset`) is a new **param**, and §2.5 makes params closed, so it is a separate addition. **Wave B.** Until then the
+contract says plainly that matching is bank-blind.
+
+**(ix) Symbol-by-offset.** Resolve a banked PC through the listing's LMA rather than its VMA. This needs every banked
+symbol to carry an LMA. Sigil's `Phase Table` does that for phased blocks only (`symbols.rs:72-126`), and an AS listing
+does not. It is the eventual consumer of (v) on `symbol`/`symbolAtPc`. **Named, not scheduled.**
+
+### 3.6 The bundling in debugread §5: is it right?
+
+| Seam | Verdict | Why |
+|---|---|---|
+| (a) typed bank key | **Belongs here.** In this design it IS `romOffset` on the three READ fields | Same derivation as `region` (`cart_region`, `engine.rs:9943`), same question ("which ROM byte"), and §11.48 S1 assigns it to this row by name |
+| (b) address-free image fingerprint (`status.romCrc32`) | **Split, as §11.48 S2 already ruled** | Different question: *which image is loaded*, not *which byte an address meant*. It has no address, no bank and no capture time. Its first concrete consumer is the MCP shim's freshness check on a >4 MiB or re-pointed image (§2.4, reasoned), which is real only once a banked ROM is driven through MCP. Bundling it would hold a trivial, independently useful key hostage to this CR's adoption, or the reverse |
+| (c) readable SRAM space (`read {space:"sram"}`) | **Split.** Its own CR when a save-tooling consumer asks | Unrelated to address ambiguity: it adds a new *space* to `read`'s closed enum. Its consumer would be save-file tooling (`oracle-frontend/src/sram_file.rs` already owns the file side), not debugging. `write_memory` refuses SRAM too (`engine.rs:4631`), so a readable SRAM space invites a matching write question this row has no evidence for |
+
+## 4. Recommendation: (v) `romOffset`, wave A now, wave B gated
+
+**One CR, "wave A", in four parts.** Parts A1 and A4 need no consumer to justify them. A2 and A3 are small, and they
+are the contract's own debt (§11.48 S1).
+
+- **A1. The convention.** §2.4 gains `romOffset`, defined once, with its presence rule and the capture rule (vi).
+- **A2. Where it is emitted in wave A:** the three READ fields (`read`, `read_memory`, `memory_hash`), which discharges
+  S1, and the NOW `pc` fields where the reply *is* a stop or a paused look: `stopped`, `status`, `run_frames`,
+  `run_to`, `step`, `step_over`, `step_out`, `play_input` and `wait_for_break`. **Not on `registers`**, which stays a
+  pure register file (decision: `status.pc` already answers the same question).
+- **A3. `status.cartBanks`:** the window table now, 8 integers, where index *k* is window *k* and index 0 is always
+  `0`. This gives a client the mapping without an address to hang it on, for example before arming a breakpoint.
+- **A4. The bus-view paragraph.** It makes the **HIST and CONFIG fields' bank-blindness normative, including the
+  aggregation**, and it amends the profiler sentence that is false on banked carts today.
+
+**Wave B**, booked and not proposed here, covers `romOffset` on HIST records via the journal (vii), per-bank profiler
+and census keys, bank-qualified breakpoints and watches (viii), and symbol-by-offset (ix). **Its trigger is the hub's
+own, verbatim: a banked ROM entering the suite**, or a client asking for historical attribution. Wave B adds fields to
+the registered list and does not add a key. So *"the typed key ships once"* (S1) holds: one name, one definition, one
+presence rule.
+
+**Why this and not the others.** (i) is wrong on the HIST rows while looking right. (ii) breaks every consumer or
+collides with the listing's 32-bit spelling. (iii) is the right *floor* and is contained in wave A (A3 + A4), but alone
+it leaves S1 open. (iv) leaves a normative sentence false on the one banked ROM oracle is known to run. (v) is the only
+option that gives a typed answer where the answer is cheap and certainly right (NOW and READ) and says out loud where it
+is not (HIST). Wave A needs **no core change and no hot-path change**. `System::cart_peek(a)` (`system.rs`, already
+serving `debug_read`) yields `CartByte::Rom(i)` for a ROM-backed address, and `cart_banks()` exists. It changes **no
+frozen currency**: `export_state` and `state_hash` are untouched (reasoned).
+
+**If the hub holds "grow only against a real consumer" strictly:** adopt **A4 alone** now, since it is prose and fixes
+a false normative sentence, and hold A1-A3 behind wave B's trigger. That is option (iv) with the false sentence
+corrected, and it is the one fallback I would defend.
+
+**The player GUI (third surface), as a decision:** the implementing parcel shows `romOffset` beside the PC in the CPU
+lens and the stop line **only when it differs from the address**. That is a display rule and not a wire rule; the wire
+presence rule is A1's. The profile and watch lenses get the same bank-blind note the contract gets, as a panel
+caption. **MCP:** no shim change is needed, because results pass through `json.dumps`. The shim's stale
+`memory_hash` description is §8's booking, not this CR's.
+
