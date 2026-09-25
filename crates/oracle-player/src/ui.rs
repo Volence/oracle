@@ -275,10 +275,11 @@ impl egui_dock::TabViewer for Panels<'_> {
         // `DockArea::show_inside` or inside a helper is a different seam the spike says nothing about. The
         // shapes between the two marks are exactly this body's, in its own layer (a floating window's body
         // has one of its own), and `screen::panels` reads them after `build_ui` returns.
-        let mark = self
-            .drawn
-            .is_some()
-            .then(|| crate::screen::PanelMark::enter(ui));
+        //
+        // The mark is taken on every pass, recorded or not: [`crate::cut_mark::mark_cut_rows`] reads the same
+        // slice to put the elision mark on every row the pane cut, and the window needs that whether or not
+        // a client is reading it.
+        let mark = crate::screen::PanelMark::enter(ui);
         match tab {
             Tab::Screen => {
                 // Controls first, then the picture with whatever is left — the order is the layout, and
@@ -301,7 +302,13 @@ impl egui_dock::TabViewer for Panels<'_> {
         }
         #[cfg(test)]
         crate::panel_attribution::hook::plant(ui);
-        if let (Some(drawn), Some(mark)) = (self.drawn.as_deref_mut(), mark) {
+        // ⚑ **A line the pane cut says so** (`PANEL-CLIP-MARK`, `d-54` ruled mark-only): after the body has
+        // painted and before the span is closed, so what the harvest reads is what the glass shows. Replaces
+        // shapes in place and adds none, so the span's `[start, end)` is the same either side of it.
+        let (layer, start) = (mark.layer(), mark.start());
+        let end = mark.leave(ui, tab.title()).end;
+        crate::cut_mark::mark_cut_rows(ui, layer, start, end);
+        if let Some(drawn) = self.drawn.as_deref_mut() {
             drawn.push(mark.leave(ui, tab.title()));
         }
     }

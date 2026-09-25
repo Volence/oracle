@@ -53,6 +53,8 @@ use oracle_frontend::audio;
 // windows. **Migration S3.**
 mod battery;
 mod bus;
+// A line a pane cuts ends in the elision mark, painted after the body (`PANEL-CLIP-MARK`, `d-54`).
+mod cut_mark;
 mod device;
 mod effects;
 mod identity;
