@@ -95,3 +95,120 @@ needs no consumer to justify it, and the part that does need one is gated on a n
 
 Re-run everything in this section:
 `git -C <worktree> grep -n -E 'cart_banks\(\)' HEAD -- crates/oracle-aether/src crates/oracle-player/src crates/oracle-frontend/src crates/oracle-replay/src crates/oracle-panels-spike`.
+
+## 2. Consumer enumeration: every served field that can carry a cart-space 68000 address
+
+### 2.1 How the list was derived, and the enumeration's own controls
+
+Two independent walks, then a cross-check. The scripts are in Appendix A, verbatim, so a reader can re-run them.
+
+- **Schema walk (the authority).** `walk.py` recurses every `methods`, `events` and `$defs` fragment of the vendored
+  schema and prints each leaf typed `$ref: #/$defs/hex`, which is D9 category 1, *"Addresses and byte payloads are hex
+  strings"*. Result (measured): **94 hex leaves** over **31 methods + 1 event (`emulator/stopped`) + 5 `$defs`**.
+  Every one of the 31 methods is in `engine::METHODS` (`comm` of the two sorted lists, measured; the only name
+  left over is the event). The 9 schema methods that `engine::METHODS` does not serve (`ping`, `vgm_*`,
+  `audio_spectrum`, `*_channel_*`, `log_clear`) carry no hex leaf.
+- **Code walk (does the server actually emit it).** `attrib.py` finds every line in `engine.rs`, `decoders.rs` and
+  `objreq.rs` (above each file's `#[cfg(test)]`) that writes a JSON key through `hex::addr(`, and names the
+  enclosing `fn`. Result (measured): **56 emit sites**.
+- **Positive controls.** Both walks return the two fields known to exist: `emulator/stopped.pc` (schema, and
+  `engine.rs:3435` `emit_stopped`) and `emulator/read.addr` (schema, and `engine.rs:4690` `read`). **Each walk also
+  missed something, and the cross-check caught it:**
+  - The schema walk's hex filter misses **`watchpoint_list.watches[].census[].key`**. It is `type: integer`, and
+    under `censusKey: "addr"` it *is* an address (its own description: *"an address, a written value, or 0/1/2 for
+    'via'"*). It was found by reading all **286 integer leaves** the same walk prints with `int`. It is the only
+    integer-typed address.
+  - The code walk misses **`registers.d0-d7` / `a0-a7`**. Their keys are built with `format!("d{i}")`
+    (`engine.rs:4073-4077`), not literals. They were found because the schema walk lists them and the code walk does
+    not.
+
+  So neither walk is complete alone. The table is the union, and every row names both its schema leaf and its emit
+  site.
+
+### 2.2 The table
+
+**Classes.** **NOW** means sampled from the live machine in the same handler call that replies, or at the stop that
+emits. **HIST** means captured at an access or step and reported later, possibly aggregated. **CONFIG** means an
+address the client armed, echoed back, which then *matches* bus addresses. **READ** means a debug read whose
+provenance `region` already discloses (§11.48). **SYM** means a listing address. "Ambiguous today" means that under
+a re-pointed window the field alone does not identify one ROM byte, and nothing typed in the same reply does either.
+
+| # | Field (schema leaf) | Emit site | Class | Ambiguous today? |
+|---|---|---|---|---|
+| 1 | event `emulator/stopped.pc` (+ `symbol`/`symbolDisp` derived from it) | `engine.rs:3435` `emit_stopped` | NOW | **yes** |
+| 2 | `status.pc` (+ `symbolAtPc`) | `engine.rs:3850` | NOW | **yes** |
+| 3 | `registers.pc` | `engine.rs:4079` | NOW | **yes** |
+| 4 | `run_frames.pc` | `engine.rs:4110` | NOW | **yes** |
+| 5 | `run_to.pc` | `engine.rs:4164` (the stop record) | NOW | **yes** |
+| 6 | `step.pc`, `step_over.pc`, `step_out.pc` | `engine.rs:4457` `halt_result` (called at `:4355`, `:4416`, `:4439`) | NOW | **yes** |
+| 7 | `play_input.pc` | `engine.rs:7200` | NOW | **yes** |
+| 8 | `wait_for_break.pc` | `engine.rs:9073` (reads `cpu_regs().pc` of a paused machine) | NOW | **yes** |
+| 9 | `read.addr` (space `bus`) | `engine.rs:4690` | READ | disclosed, **as a string** (`region`) |
+| 10 | `read_memory.addr` | `engine.rs:4538` | READ | disclosed, as a string |
+| 11 | `memory_hash.addr` | `engine.rs:5292` | READ | disclosed, as a string |
+| 12 | `watchpoint_hits.hits[].addr` | `engine.rs:8775` `watch_hit_json` | HIST | **yes** (`value`/`old`, `:8776`/`:8780`, are the true bytes and not addresses) |
+| 13 | `watchpoint_hits.hits[].pc` | `engine.rs:8785` | HIST | **yes** |
+| 14 | `watchpoint_list.watches[].first/.last` → `$defs/watchStamp.pc` | `engine.rs:9696` `watch_stamp_json` | HIST | **yes** |
+| 15 | `watchpoint_list.watches[].census[].key` (censusKey `addr`) | `engine.rs:9681` | HIST, aggregated | **yes, and conflated**: one key counts accesses in every bank |
+| 16 | `get_profiler_frames.routines.items[].addr` | `engine.rs:5664` `profiler_row` | HIST, aggregated | **yes, and conflated** (`profiler.rs:427`) |
+| 17 | `get_profiler_frames.routines.items[].callers[].callerAddr` | `engine.rs:5727` `profiler_caller_edge` | HIST, aggregated | **yes, and conflated** (`profiler.rs:437`) |
+| 18 | `run_to.target` | `engine.rs:4142`, `:4162` | CONFIG | **yes**: matches in every bank |
+| 19 | `watchpoint_add.addr`, `watchpoint_list.watches[].addr` | `engine.rs:8576`, `:9652` | CONFIG | **yes**: a bus watch range matches in every bank (`watchpoint_add` refuses only a range past `BUS_ADDR_MAX`) |
+| 20 | `breakpoint_add.addr`, `breakpoint_list.breakpoints[].addr` (+ `hits`) | `engine.rs:8853`, `:8943` | CONFIG, `hits` aggregated | **yes**: fires in every bank (`breakpoints.rs:145`), and `hits` sums across banks |
+| 21 | `lookup_symbol.addr`, `.rawAddr`, `.otherMatches.items[].addr` | `engine.rs:7271`, `:7310-7311`, `:7349`, `:9709` | SYM | **yes, for a banked listing**: a VMA in window *k* names a different ROM byte per bank (`symbols.rs:1322`) |
+
+That is **21 rows covering 27 result/event fields, over 19 methods and 1 event.** **24 fields are ambiguous today and
+3 disclose the bank only as a string.** The two-surface cross-check above is the enumeration's positive control.
+
+**Enumerated and excluded, with the reason for each (the negative class):**
+
+- **Register values.** `registers.a0-a7`, `d0-d7`, `sp`, `usp`, `ssp` (`engine.rs:4073-4082`) and `status.sp`
+  (`:3851`) are **values**. One may hold a cart pointer, but the bus never asserts that it is an address. A client
+  that dereferences one does so through `read`, which discloses. **Decision: not annotated.**
+- **RAM by construction.** `write_memory.addr` (`:4639`) is refused outside `$E00000-$FFFFFF` (`:4629-4633`), and so
+  are the object mailbox's `addr` / `handle` / `baseAddr` (`engine.rs:6520`, `:6880`, `:6910`; `decoders.rs:330`,
+  `:684`; `objreq.rs:243`), which are SST records in work RAM.
+- **Not 68000 space (19 hex leaves).** `read_vram` / `write_vram.addr`, `read_cram` / `write_cram.cramAddr`,
+  `pixel_attribution.cramAddr/tileAddr/satAddr`, `sprites.satBase`, `z80_read` / `z80_write.addr`. `z80_read` serves
+  only the Z80's own 16 KB (`engine.rs:6100-6130`), never its `$8000` bank window.
+- **Error echoes.** `error.data.addr` (`engine.rs:10326`, `:7258`) repeats a request's address back. It inherits the
+  request's meaning and asserts nothing new.
+- **`object_spawn.def`** is a **param** (a client-supplied `ObjDef` pointer; pre-flighted at `engine.rs:6612` to
+  lie in `$000000-$3FFFFF`). The game dereferences it through the bus, so on a banked game it would mean whatever
+  the window shows at the dereference. It is a CONFIG input with no reply-side field. Aeon places no ObjDef in a
+  banked window, because aeon does not bank (§1). **Recorded, not annotated.**
+
+### 2.3 The third surface (the player GUI), in-process
+
+These are not wire fields, but the three-surface directive asks that each gap be a decision. Every one prints a
+bare address (measured by grep, read not run): the CPU lens `PC $XXXXXX` (`crates/oracle-frontend/src/lens/cpu.rs:127-129`),
+the watch lens hit PC (`lens/watch.rs:54`), the profile lens rows (`lens/profile.rs`), and the player's stop and
+breakpoint lines (`crates/oracle-player/src/stopping.rs:541`, `:1226-1228`, `:2520`). The Memory panel alone shows
+the bank (`memory.rs:1249`).
+
+### 2.4 Sibling consumers (read through git objects at each lane's `origin` default branch)
+
+- **aurora** `origin/master` `44ba3d7` (measured): its `src/` calls `emulator/status` (for `romPath`),
+  `lookup_symbol` **by name** (`client.ts:462`), `run_to` **by symbol** (`boot-restore.ts:184`), and `read_memory`
+  bytes. `git grep -c -E 'watchpoint_hits|get_profiler_frames|breakpoint_add|breakpoint_list|callerAddr|wait_for_break' 44ba3d7 -- src`
+  gives **0**. No history-bearing result has a reader there. Results are cast (`as { romPath?: string }`), not
+  validated. The only `z.object` in `src/main/aether` (`adapter.ts:25`) validates aurora's own `editor/*` **params**.
+  **An additive result key breaks nothing in aurora (reasoned from those sites).**
+- **aeon** `origin/master` `63013da` (measured): `get_profiler_frames` in three cost probes
+  (`tools/parallax_cost_probe.py:748`, `:853`, `:1083`; `tools/raster_cost_probe.py:608`), and `memory_hash` in
+  `tools/evict_witness.py`, which is §11.48's named reviewer. Aeon does not bank (§1), so every row it reads is the
+  identity case. `tools/test_legacy_seam_keys.py` pins the **params** aeon sends, not result keys. **An additive result
+  key breaks nothing in aeon (reasoned).**
+- **The MCP shim**, which is live: `~/.claude.json` registers `oracle-old/linux-port/mcp/oracle-mcp`. At its `HEAD`
+  `1eb09a9` (which is `mcp_tool_sweep.rs`'s `PIN_REV`), it returns results through `json.dumps(result)`
+  (`oracle_mcp.py:1261`, `:1747`). So a new key reaches the model unchanged. It never reads `region`: `git grep -c -E
+  'get\("region"\)|\["region"\]'` gives 0, with `get\("crc32"\)` giving 1 as the control. **Two findings in passing,
+  both (reasoned):**
+  - Its ROM-freshness check (`:1361-1555`) hashes `$000000..romBytes` in `maxHashLen` chunks, which are 4 MiB
+    (`engine.rs:230`, fallback `oracle_mcp.py:1296`). On any image over 4 MiB, and on any image while a window is
+    re-pointed, the first refused chunk makes it answer `"unmeasurable"` (`:1510-1520`). That is loud, never a false
+    `"stale"`, because §11.48 refuses a straddle. **This is the first concrete consumer of §11.48 S2** (an
+    address-free fingerprint), but only once a banked ROM is driven through MCP.
+  - Its `memory_hash` tool description (`:478-487`) still says *"one of two regions"* and that *"a cart-window hash
+    matches CRC32 over the ROM-file slice"*. That is a §11.48 paraphrase left standing in a live client. It is not
+    this row's to fix, and it is booked in §8.
