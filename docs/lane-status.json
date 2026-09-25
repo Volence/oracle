@@ -1,12 +1,6 @@
 {
-  "focus": "Landed: the effects panel reads aeon's published band size. Your listens and looks are still waiting.",
-  "inFlight": [
-    {
-      "what": "Waiting for the online test run on the band-size landing to finish",
-      "where": "own: tools/ci-verdict.py --wait on efc6675",
-      "agent": false
-    }
-  ],
+  "focus": "Landed and confirmed by the online tests: the effects panel reads aeon's band size. Ready for a clear.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the online test run on the band-size landing reads green; then the bank-switching address question.",
+  "nextBoundary": "Here. Nothing is running and everything is pushed. The next session starts the bank-switching address question.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -42,7 +36,7 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "next",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -58,7 +52,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -89,7 +83,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-25T12:15:36Z"
+  "awaiting": "a clear: nothing is unbanked, and this session is at 168,346 tokens by the transcript's usage record. The next session takes the bank-switching address question.",
+  "atBoundary": true,
+  "updatedAt": "2026-09-25T12:29:32Z"
 }
