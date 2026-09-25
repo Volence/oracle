@@ -1,5 +1,5 @@
 {
-  "focus": "Everything buildable is done. What is left on this lane is your eyes.",
+  "focus": "Booted fresh. Nothing buildable is left; everything on this lane waits on your eyes or two of your cards.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -13,7 +13,7 @@
       "id": "d-54"
     }
   ],
-  "nextBoundary": "Here now and fully: fifteen landings, main green (the last proven on a byte-identical SHA), nothing running.",
+  "nextBoundary": "Here now: booted, nothing running, nothing unbanked. No new work since 09-19 in this repo or any peer's.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -104,7 +104,7 @@
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
     }
   ],
-  "awaiting": "nothing buildable remains. Cheapest first: d-54 (one answer releases 67 held rows); then the nudge controls moving the picture; then the raster and bands channels selecting.",
+  "awaiting": "your go on what to do. Cheapest first: d-54 (one answer releases 67 held rows); otherwise I can chase the cancelled CI run or the controller-port bit, which need nobody.",
   "atBoundary": true,
-  "updatedAt": "2026-09-19T16:00:29Z"
+  "updatedAt": "2026-09-25T05:40:13Z"
 }
