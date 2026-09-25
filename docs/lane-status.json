@@ -1,5 +1,5 @@
 {
-  "focus": "Landed overnight: the controller-bit fix, a CI checker, the '...' marks. Your sound kit is ready to listen to.",
+  "focus": "Booted fresh. Nothing running; overnight work is landed and pushed. Your sound kit is ready to listen to.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -83,7 +83,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your pick for this session: the sound kit (d-51), a look at the '...' marks, or the sound-chip watch fix. Nothing is running.",
+  "awaiting": "your pick: the sound kit (d-51), a look at the '...' marks, or the sound-chip watch fix. Nothing is running.",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T09:28:07Z"
+  "updatedAt": "2026-09-25T10:28:09Z"
 }
