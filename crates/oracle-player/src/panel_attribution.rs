@@ -1517,10 +1517,23 @@ mod tests {
                         .all(|r| g.clip.contains_rect(r));
                     if whole {
                         elided += 1;
-                        assert!(
-                            run.rendered.ends_with('\u{2026}'),
-                            "{name}: an elided, unclipped run does not end in the mark: {run:?}"
-                        );
+                        // ⚑ A ONE-row run ends in the mark. A wrapped paragraph the PANE cut carries the
+                        // mark on every row the pane cut (`crate::cut_mark`, `d-54` mark-only), and its last
+                        // row may be one the pane did not cut, so for it the mark is inside `rendered`
+                        // rather than at its end. Before 2026-09-25 only the toolkit elided, and it elides
+                        // only at the end, so `ends_with` held for every run; the rule did not change, the
+                        // glass did.
+                        if g.galley.rows.len() == 1 {
+                            assert!(
+                                run.rendered.ends_with('\u{2026}'),
+                                "{name}: an elided, unclipped run does not end in the mark: {run:?}"
+                            );
+                        } else {
+                            assert!(
+                                run.rendered.contains('\u{2026}'),
+                                "{name}: an elided, unclipped paragraph carries no mark: {run:?}"
+                            );
+                        }
                         assert_ne!(run.rendered, run.text, "{name}: {run:?}");
                     }
                 }
@@ -1549,21 +1562,25 @@ mod tests {
     fn w6_a_clipped_run_is_whole_in_text_and_a_wholly_clipped_one_is_empty_in_rendered() {
         const STRADDLE: &str = "STRADDLING THE RIGHT EDGE OF THE PANE";
         const OUTSIDE: &str = "WHOLLY OUTSIDE THE PANE";
+        let straddle_setup = Setup {
+            plant: Some((
+                Some(Tab::Pacing),
+                Plant::Straddle {
+                    text: STRADDLE.into(),
+                    inside: 40.0,
+                },
+            )),
+            ..Setup::default()
+        };
+        // ⚑ **Two arms since `d-54` was ruled mark-only (2026-09-25).** The straddle sits on the pane's
+        // edge, so the window now marks it (`crate::cut_mark`) and the glyphs on the glass are a prefix
+        // FOLLOWED BY the mark. §11.50 did not change — `rendered` is still the glyphs on the glass — the
+        // glass did. So the harvest's own clipping reading is proven where nothing re-lays the glass (the
+        // control arm, marking off: exactly this row's old assertion), and the window's glass is pinned
+        // beside it.
         let mut lp = fixture(crate::ui::initial_dock());
-        let straddle = one(
-            &mut lp,
-            &Setup {
-                plant: Some((
-                    Some(Tab::Pacing),
-                    Plant::Straddle {
-                        text: STRADDLE.into(),
-                        inside: 40.0,
-                    },
-                )),
-                ..Setup::default()
-            },
-        );
-        let g = painted_of(&straddle, Tab::Pacing)
+        let bare = crate::cut_mark::with_marking_off(|| one(&mut lp, &straddle_setup));
+        let g = painted_of(&bare, Tab::Pacing)
             .iter()
             .find(|g| g.galley.text() == STRADDLE)
             .expect("control: the straddling run was painted into the span");
@@ -1576,10 +1593,35 @@ mod tests {
             "rendered is the visible prefix: {:?}",
             run.rendered
         );
+        let s = bare.surface(Tab::Pacing);
+        assert!(s["text"].as_str().unwrap().contains(STRADDLE));
+        assert!(!s["rendered"].as_str().unwrap().contains(STRADDLE));
+        assert_eq!(s["truncated"], serde_json::json!(true));
+        assert_aligned("straddle, marking off", &bare);
+
+        let straddle = one(&mut lp, &straddle_setup);
+        let g = painted_of(&straddle, Tab::Pacing)
+            .iter()
+            .find(|g| g.galley.text() == STRADDLE)
+            .expect("control: the straddling run was painted into the span");
+        let run = glass_run(g).expect("part of it is on the glass");
+        assert_eq!(run.text, STRADDLE, "text carries the whole source");
+        let kept = run.rendered.strip_suffix('\u{2026}').unwrap_or_else(|| {
+            panic!(
+                "the window's glass ends the cut run in the mark: {:?}",
+                run.rendered
+            )
+        });
+        assert!(
+            !kept.is_empty() && STRADDLE.starts_with(kept) && kept != STRADDLE,
+            "rendered is a visible prefix and the mark: {:?}",
+            run.rendered
+        );
         let s = straddle.surface(Tab::Pacing);
         assert!(s["text"].as_str().unwrap().contains(STRADDLE));
         assert!(!s["rendered"].as_str().unwrap().contains(STRADDLE));
         assert_eq!(s["truncated"], serde_json::json!(true));
+        assert_aligned("straddle", &straddle);
 
         let outside = one(
             &mut lp,
@@ -2466,6 +2508,9 @@ mod tests {
         marked: usize,
         offenders: Vec<(String, String, RowCut)>,
         blanked: Vec<(String, String, String)>,
+        /// Runs laid out on a row the pane shows, with EVERY glyph past the clip's right edge: nothing of
+        /// them is on the glass, so there is nowhere to put a mark. Printed, not asserted — see the gate.
+        wholly_past: Vec<(String, String, String)>,
         /// `(arrangement, panel, text, rendered)` for every panel surface the reply served.
         surfaces: Vec<(String, String, String, String)>,
     }
@@ -2522,6 +2567,13 @@ mod tests {
                         }
                     }
                     a.announced += announced_rows(g);
+                    if wholly_past_the_edge(g) {
+                        a.wholly_past.push((
+                            name.clone(),
+                            span.name.to_owned(),
+                            g.galley.text().to_owned(),
+                        ));
+                    }
                     for c in row_cuts(g) {
                         a.rows += 1;
                         if c.visible.trim_end().ends_with('\u{2026}') {
@@ -2535,6 +2587,25 @@ mod tests {
         }
         a.offenders.sort_by(|a, b| b.2.over.total_cmp(&a.2.over));
         a
+    }
+
+    /// Whether every non-blank glyph of `p` lies wholly right of its clip, on a row the clip's vertical
+    /// span shows: a run the pane ate whole, sideways. [`crate::cut_mark`] cannot mark it (no glyph of it
+    /// is on the glass to end in the mark); §11.50 serves it with an empty `rendered`.
+    fn wholly_past_the_edge(p: &Painted) -> bool {
+        let origin = p.pos.to_vec2();
+        let mut any = false;
+        for row in &p.galley.rows {
+            let o = origin + row.pos.to_vec2();
+            for g in row.glyphs.iter().filter(|g| !g.chr.is_whitespace()) {
+                let r = g.logical_rect().translate(o);
+                if r.max.y <= p.clip.min.y || r.min.y >= p.clip.max.y || r.min.x < p.clip.max.x {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        any
     }
 
     /// The glyph rows of `p` whose visible text, trailing blanks aside, ends in the elision mark.
@@ -2778,6 +2849,16 @@ mod tests {
         );
         println!("CUTS control arm by panel: {by_panel:?}");
         println!("CUTS controls left for the owner: {seen:?}");
+        // Not asserted: a run the pane ate whole has no glyph on the glass to carry the mark, so it is
+        // outside what mark-only can reach; whether such a control should sit off the pane at all is the
+        // layout half `d-54` kept for the owner. Printed so the count is on the record, not discovered.
+        for (arr, panel, text) in &on.wholly_past {
+            println!("WHOLLY-PAST {arr} / {panel} :: {text:?}");
+        }
+        println!(
+            "CUTS wholly past the pane's edge (no glyph on the glass, unmarkable): {}",
+            on.wholly_past.len()
+        );
     }
 
     /// **The `is_serving` gate, observed**: a window no client can reach runs `Loop::iterate` — the
