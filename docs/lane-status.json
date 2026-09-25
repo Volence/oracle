@@ -1,12 +1,6 @@
 {
-  "focus": "Boot-notes trim landed; building the sound-chip watch fix to go out together with aeon's matching change.",
-  "inFlight": [
-    {
-      "what": "Sound-chip watch fix: report the Z80's sound writes at the right address, plus the new contract copy",
-      "where": "branch parcel/z80-watch-tap",
-      "agent": true
-    }
-  ],
+  "focus": "Sound-chip watch fix and notes trim both landed; aeon is landing its matching change now.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the watch fix lands and is pushed in the same window as aeon's address move.",
+  "nextBoundary": "Now: both landed and pushed, CI being read. Next is the small warning-delivery row.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -41,20 +35,12 @@
       "title": "The sound-interrupt change is built on a side branch with a before/after kit. It lands only after you listen."
     },
     {
-      "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "Build the accepted sound-chip watch fix: report its writes at the right address, update our contract copy, and move in step with aeon."
-    },
-    {
       "id": "F-Z80-WIRE-CAVEAT-ABSENT",
       "state": "next",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "A warning our emulator attaches to Z80 watch results never reaches the tools that read them. Check what's left of it after the watch fix, then deliver or retire it."
+      "title": "The watch fix landed; what is left of this warning is small. Check it, then deliver it on the wire or retire it."
     },
     {
       "id": "LENS-WAVE-1",
@@ -91,5 +77,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T16:18:50Z"
+  "updatedAt": "2026-09-25T17:26:39Z"
 }
