@@ -7,11 +7,6 @@
       "agent": true
     },
     {
-      "what": "Find out why one automated test run was cancelled partway",
-      "where": "branch parcel/ci-run-cancelled",
-      "agent": true
-    },
-    {
       "what": "Settle which answer is right for the controller-port bit we disagree on",
       "where": "branch parcel/io-data-bit7",
       "agent": true
@@ -46,14 +41,6 @@
       "blockedBy": null,
       "project": "ORACLE-DEBUG-UI",
       "title": "Hub ruled d-54 mark-only: the 67 panel lines cut by a table or control wider than its pane get the '...' mark. Wrap and widths stay yours."
-    },
-    {
-      "id": "F-CI-RUN-CANCELLED-UNEXPLAINED",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "One automated run was cancelled partway with no reason given and no setting that explains it. Harmless this time, but a cancelled run reads like a pass if nobody looks."
     },
     {
       "id": "F-IO-DATA-BIT7",
@@ -118,9 +105,17 @@
       "blockedBy": "your look at the write-up first",
       "project": "ORACLE-DEBUG-UI",
       "title": "You liked the old command palette and this one has no easy way in. You get a written comparison of what the old one did before anyone spends on rebuilding it."
+    },
+    {
+      "id": "F-CI-VERDICT-TOOL",
+      "state": "open",
+      "size": "S",
+      "blockedBy": null,
+      "project": "ORACLE-DEFAULT",
+      "title": "A small checker that says a test run passed only when every part of it really passed, and a time limit on the long test job."
     }
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T06:57:07Z"
+  "updatedAt": "2026-09-25T07:06:38Z"
 }
