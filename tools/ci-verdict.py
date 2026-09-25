@@ -360,6 +360,8 @@ def positive_control(gh, workflow_path):
 def tip_search(gh, sha, ref, expected_paths):
     """On NO-RUN: the first descendant of `sha` along `ref` that has a push run of a missing workflow."""
     lines = []
+    if git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False).returncode != 0:
+        return [f"  tip search skipped: --ref {ref!r} does not resolve here (fetch it, or pass --ref)"]
     if git("merge-base", "--is-ancestor", sha, ref, check=False).returncode != 0:
         remote = git("branch", "-r", "--contains", sha, check=False).stdout.split()
         lines.append(f"  {sha[:12]} is not an ancestor of {ref}"
@@ -407,9 +409,16 @@ def verdict(gh, sha, ref="origin/main"):
             lines.append("  ⚑ a multi-commit push runs CI on its TIP only; a commit inside a push has no "
                          "run of its own")
             ctl_path = missing[0] if missing else (expected[0]["path"] if expected else None)
-            if ctl_path:
-                lines.append(positive_control(gh, ctl_path))
-            lines += tip_search(gh, sha, ref, {w["path"] for w in expected})
+            if ctl_path is None:
+                # Nothing was expected at this SHA (it predates the workflows). The control still has
+                # to fire, so it borrows a push workflow from HEAD.
+                head = expected_workflows("HEAD")
+                if not head:
+                    raise Unmeasurable("no push-triggered workflow at this SHA or at HEAD, so no query "
+                                       "can be shown to fire")
+                ctl_path = head[0]["path"]
+            lines.append(positive_control(gh, ctl_path))
+            lines += tip_search(gh, sha, ref, {w["path"] for w in expected} or {ctl_path})
     except Unmeasurable as e:
         return UNMEASURABLE, lines + [f"  UNMEASURABLE: {e}"], f"ci-verdict: UNMEASURABLE {sha} — {e}"
     return code, lines, f"ci-verdict: {WORD[code]} {sha} — " + ("; ".join(summary) or "no runs")
@@ -441,11 +450,16 @@ def main(argv=None):
         print(f"ci-verdict: UNMEASURABLE {args.sha} — {e}")
         return UNMEASURABLE
     t0 = time.monotonic()
+    blips = 0
     while True:
         code, lines, final = verdict(gh, sha, args.ref)
         waited = (time.monotonic() - t0) / 60
+        # Under --wait a single failed query (a network blip an hour into a wait) is retried, up to
+        # three in a row; a fourth is the verdict. Without --wait it is reported at once.
+        blips = blips + 1 if code == UNMEASURABLE else 0
         keep = args.wait and waited < args.deadline and (
-            code == PENDING or (code == NO_RUN and waited < args.grace))
+            code == PENDING or (code == NO_RUN and waited < args.grace)
+            or (code == UNMEASURABLE and blips <= 3))
         if not keep:
             break
         print(f"[{time.strftime('%H:%M:%S')}] {waited:5.1f} min  {final}", flush=True)

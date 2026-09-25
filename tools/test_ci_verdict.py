@@ -14,6 +14,8 @@ judgement reads), into `tools/ci-verdict-fixtures/`:
   ddf4b1e-no-run           a docs-only commit inside a two-commit push; no run of its own. Holds the
                            positive-control responses and the tip search (ref pinned at 420986b)
   23599fa-schedule-runs    a green push run plus five nightly `schedule` runs on the same SHA
+  abbd873-before-ci        the parent of 28ef647, the commit that added ci.yml: nothing is expected,
+                           and "nothing expected, nothing ran" must still not read as GREEN
 
 The fixtures are the API's words, not ours: no JSON in them was hand-written. Every MUTATION below
 departs from one of them (deep-copied) and changes one field, so each red is one field away from a
@@ -63,6 +65,8 @@ SHA_GREEN = "7d56eb6742fbf495899ae36f4a183edf758939e4"
 SHA_NORUN = "ddf4b1e43a9f8df0eda8591f5b1dd8d4ae159926"
 SHA_TIP = "420986b50cc3349a0f4e23409c036f793f7dc0f5"
 SHA_SCHED = "23599fabe1c293c283399df4a3a64e96c9d90cd3"
+SHA_PRE_CI = "abbd87366a9e63d597922d9e2f9f860d791084c6"   # parent of the commit that added ci.yml
+SHA_CI_ADDED = "28ef647cbb26000eb73f46c337bf4e9316ff251f"
 RUN_GREEN = 35451855080
 
 failures = []
@@ -138,6 +142,9 @@ def main():
            "The query fires", SHA_TIP, "crates/ is IDENTICAL", "TIP only")
     expect("23599fa: five schedule runs are named and ignored; the push run decides (GREEN)",
            run("23599fa-schedule-runs", SHA_SCHED), cv.GREEN, "event=schedule", "35453569843")
+    expect("abbd873 (before ci.yml existed): NO-RUN, never GREEN, control borrowed from HEAD",
+           run("abbd873-before-ci", SHA_PRE_CI, ref=SHA_CI_ADDED), cv.NO_RUN,
+           "expected push workflows at this SHA: none", "positive control:")
 
     print("=== control arm: the hand loop's predicate on the same bytes ===")
     old = {s: [r["status"] for r in fixture(d, runs_path(s))["workflow_runs"]]

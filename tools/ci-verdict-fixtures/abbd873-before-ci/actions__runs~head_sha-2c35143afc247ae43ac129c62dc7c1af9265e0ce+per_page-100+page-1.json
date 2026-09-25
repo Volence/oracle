@@ -1,0 +1,35 @@
+{
+ "total_count": 2,
+ "workflow_runs": [
+  {
+   "conclusion": null,
+   "created_at": "2026-09-25T07:16:28Z",
+   "event": "schedule",
+   "head_branch": "main",
+   "head_sha": "2c35143afc247ae43ac129c62dc7c1af9265e0ce",
+   "html_url": "https://github.com/Volence/oracle/actions/runs/36106811374",
+   "id": 36106811374,
+   "name": "Nightly BlastEm differential",
+   "path": ".github/workflows/nightly-differential.yml",
+   "run_attempt": 1,
+   "status": "in_progress",
+   "updated_at": "2026-09-25T07:16:30Z",
+   "workflow_id": 314438700
+  },
+  {
+   "conclusion": null,
+   "created_at": "2026-09-25T07:07:15Z",
+   "event": "push",
+   "head_branch": "main",
+   "head_sha": "2c35143afc247ae43ac129c62dc7c1af9265e0ce",
+   "html_url": "https://github.com/Volence/oracle/actions/runs/36106058002",
+   "id": 36106058002,
+   "name": "CI",
+   "path": ".github/workflows/ci.yml",
+   "run_attempt": 1,
+   "status": "in_progress",
+   "updated_at": "2026-09-25T07:08:49Z",
+   "workflow_id": 313973439
+  }
+ ]
+}
