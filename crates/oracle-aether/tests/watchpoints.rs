@@ -420,8 +420,8 @@ fn a_via_census_answers_cpu_versus_dma_on_a_vdp_watch() {
 /// `seen > 0` with `matched == 0` is a live instrument that found nothing. `seen == 0` is an instrument
 /// that was never attached to the run, and a zero from it means nothing at all. Without the distinction a
 /// client cannot tell "the 68000 never writes this address" from "the recorder was not in the run" (the
-/// Z80's accesses are not delivered to the recorder at all, F-Z80-ACCESSES-UNWATCHED, and `caveats()`,
-/// which says so, is not on this wire) — and the
+/// Z80's accesses other than its YM/PSG register writes are not delivered to the recorder at all,
+/// F-Z80-ACCESSES-UNWATCHED, and `caveats()`, which says so, is not on this wire) — and the
 /// second is a real failure mode wherever the process that owns the loop is not the one that armed the
 /// watch, which is precisely this server's hosted arrangement.
 #[test]
@@ -857,4 +857,179 @@ fn the_capability_advertises_the_numbers_a_client_has_to_plan_around() {
     ] {
         assert!(methods.contains(&m), "{m} is not advertised");
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// §6 "The Z80 and the watch surface" (§11.52): the Z80's YM/PSG writes on the wire.
+// ---------------------------------------------------------------------------------------------------
+
+/// A listing whose `Vectors` symbol sits at `$0` — so a Z80 PC such as `$0002` WOULD resolve to
+/// `Vectors+0x2` if the server symbolised it against the 68000 listing — and whose `EntryPoint` covers the
+/// fixture's 68000 loop, the positive control that the table is loaded and does name 68000 hits.
+const Z80_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Vectors : 0 C |
+
+    2 symbols
+    0 unused symbols
+";
+
+/// `LD A,$2B ; LD ($4000),A ; LD A,$80 ; LD ($4001),A ; LD A,$9F ; LD ($7F11),A ; HALT` at Z80 `$0000`:
+/// YM writes at Z80 PCs `$0002`/`$0007`, a PSG write at `$000C` (the byte offsets of the `LD (nn),A`s).
+const Z80_YM_PSG: &[u8] = &[
+    0x3E, 0x2B, 0x32, 0x00, 0x40, 0x3E, 0x80, 0x32, 0x01, 0x40, 0x3E, 0x9F, 0x32, 0x11, 0x7F, 0x76,
+];
+
+/// The fixture machine with [`Z80_YM_PSG`] loaded and the Z80 released from reset, before the server owns
+/// it (the pose of `oracle-core/tests/z80_timing_probes.rs::released`).
+fn z80_released_server(tag: &str) -> ServerHandle {
+    use oracle_core::m68000::bus68k::Bus68k;
+    let mut sys = System::new(0x5EED);
+    sys.load_rom(oracle_core::testrom::build());
+    sys.reset();
+    sys.z80_ram_mut()[..Z80_YM_PSG.len()].copy_from_slice(Z80_YM_PSG);
+    let t = sys.scheduler().now();
+    sys.run_until(t + 1_000);
+    assert!(!sys.z80_running(), "UNMEASURABLE: the Z80 left reset early");
+    sys.mega_bus(&mut ()).write8(0xA1_1200, 5, 1);
+    assert!(
+        sys.z80_running(),
+        "UNMEASURABLE: the reset release did not latch"
+    );
+    spawn_system(tag, sys, 1024)
+}
+
+/// **A Z80 hit on the wire**: at its 68000-map address, `via: "z80"`, the Z80's `pc`, and no `fc`,
+/// `symbol` or `symbolDisp` — even with a listing loaded that would name that `pc` — while a 68000 hit in the
+/// same reply keeps its `fc` and its symbol. `Client::recv` validates every reply closed against the
+/// vendored §11.52 fragment, and `watchpoint_list`'s `first`/`last` carry `via: "z80"`.
+#[test]
+fn a_z80_hit_on_the_wire_carries_the_z80s_fields_and_no_68000_ones() {
+    let h = z80_released_server("wp-z80");
+    let mut c = Client::connect(&h);
+    c.handshake(true);
+    let lst = std::env::temp_dir().join(format!("ae-wp-z80-{}.lst", std::process::id()));
+    std::fs::write(&lst, Z80_LST).unwrap();
+    c.ok(
+        "emulator/load_symbols",
+        json!({"path": lst.display().to_string()}),
+    );
+    let ym = c.ok(
+        "emulator/watchpoint_add",
+        json!({"addr": "0x00A04000", "len": 4}),
+    )["watch"]
+        .clone();
+    let psg = c.ok(
+        "emulator/watchpoint_add",
+        json!({"addr": "0x00A07F11", "len": 1}),
+    )["watch"]
+        .clone();
+    let raw = c.ok(
+        "emulator/watchpoint_add",
+        json!({"addr": "0x00004000", "len": 4}),
+    )["watch"]
+        .clone();
+    let ram = c.ok(
+        "emulator/watchpoint_add",
+        // A word the fixture's stir loop reaches after the release (it walks up from $FF0000, and
+        // $FF0000 itself was stirred before the Z80 left reset).
+        json!({"addr": "0x00FF0100", "len": 2}),
+    )["watch"]
+        .clone();
+    c.ok("emulator/run_frames", json!({"frames": 1}));
+    let reply = hits(&mut c, json!({}));
+    let all = reply["hits"].as_array().unwrap();
+
+    let z80: Vec<&Value> = all.iter().filter(|h| h["via"] == json!("z80")).collect();
+    let got: Vec<(Value, Value, Value, Value)> = z80
+        .iter()
+        .map(|h| {
+            (
+                h["watch"].clone(),
+                h["addr"].clone(),
+                h["pc"].clone(),
+                h["value"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (
+                ym.clone(),
+                json!("0x00A04000"),
+                json!("0x00000002"),
+                json!("0x0000002B")
+            ),
+            (
+                ym.clone(),
+                json!("0x00A04001"),
+                json!("0x00000007"),
+                json!("0x00000080")
+            ),
+            (
+                psg.clone(),
+                json!("0x00A07F11"),
+                json!("0x0000000C"),
+                json!("0x0000009F")
+            ),
+        ],
+        "{all:#?}"
+    );
+    for h in &z80 {
+        assert_eq!(h["space"], json!("bus"));
+        for absent in ["fc", "symbol", "symbolDisp", "old"] {
+            assert!(
+                h.get(absent).is_none(),
+                "a z80 hit carries no `{absent}`: {h}"
+            );
+        }
+    }
+    assert!(
+        all.iter().all(|h| h["watch"] != raw),
+        "nothing is reported at the Z80-side address"
+    );
+    let m68k = all
+        .iter()
+        .find(|h| h["watch"] == ram)
+        .expect("positive control: the 68000's own stir write in the same run");
+    assert_eq!(m68k["via"], json!("bus"));
+    assert!(
+        m68k.get("fc").is_some(),
+        "a 68000 bus hit keeps its fc: {m68k}"
+    );
+    assert_eq!(
+        m68k["symbol"],
+        json!("EntryPoint"),
+        "the listing is loaded and does name a 68000 pc: {m68k}"
+    );
+
+    let list = c.ok("emulator/watchpoint_list", json!({}));
+    let ym_row = list["watches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["watch"] == ym)
+        .expect("the ym watch");
+    assert_eq!(ym_row["matched"], json!(2));
+    assert_eq!(
+        ym_row["first"],
+        json!({"pc": "0x00000002", "frame": ym_row["first"]["frame"], "mclk": ym_row["first"]["mclk"],
+               "seq": ym_row["first"]["seq"], "via": "z80"})
+    );
+    assert_eq!(ym_row["last"]["via"], json!("z80"));
+    let ram_row = list["watches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["watch"] == ram)
+        .expect("the ram watch");
+    assert!(
+        ram_row["first"].get("via").is_none(),
+        "a 68000 stamp carries no via: {ram_row}"
+    );
+    let _ = std::fs::remove_file(&lst);
 }

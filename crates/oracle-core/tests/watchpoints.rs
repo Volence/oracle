@@ -876,3 +876,251 @@ fn size_and_parity_filter_a_vdp_internal_watch_by_capture_width() {
         0
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Contract §11.52 (F-Z80-ACCESSES-UNWATCHED, option C): the Z80 and the watch surface.
+//
+// Every expected value below comes from the Z80 program listing and the contract, never from the emulator's
+// output: a Z80 PC is the byte offset of its `LD (nn),A`, a 68000-map address is `$A00000 | a` (§6: "`addr`
+// is the register's address in the 68000's map"), and an instruction's start clock is the release instant
+// plus the T-states before it times `MCLK_PER_Z80_CYCLE` (UM0080: `LD A,n` 7 T, `LD (nn),A` 13 T).
+// ---------------------------------------------------------------------------------------------------------
+
+use oracle_core::m68000::bus68k::Bus68k;
+use oracle_core::system::{MCLK_PER_FRAME, MCLK_PER_Z80_CYCLE};
+
+/// `LD A,$2B ; LD ($4000),A ; LD A,$80 ; LD ($4001),A ; LD A,$9F ; LD ($7F11),A ; HALT` at Z80 `$0000`.
+/// Two YM2612 writes (address latch, data port) and one PSG write, then an idle HALT.
+const YM_PSG_PROGRAM: &[u8] = &[
+    0x3E, 0x2B, // 0000 LD A,$2B        7 T
+    0x32, 0x00, 0x40, // 0002 LD ($4000),A  13 T
+    0x3E, 0x80, // 0005 LD A,$80        7 T
+    0x32, 0x01, 0x40, // 0007 LD ($4001),A  13 T
+    0x3E, 0x9F, // 000A LD A,$9F        7 T
+    0x32, 0x11, 0x7F, // 000C LD ($7F11),A  13 T
+    0x76, // 000F HALT
+];
+
+/// The Z80 writes of [`YM_PSG_PROGRAM`], from its listing: `(68000-map addr, value, Z80 pc, T-states from
+/// the release to the start of the writing instruction)`.
+const YM_PSG_WRITES: [(u32, u32, u32, u64); 3] = [
+    (0xA0_4000, 0x2B, 0x0002, 7),
+    (0xA0_4001, 0x80, 0x0007, 7 + 13 + 7),
+    (0xA0_7F11, 0x9F, 0x000C, 7 + 13 + 7 + 13 + 7),
+];
+
+/// The fixture machine with `program` at Z80 `$0000`, the Z80 released from reset at the returned instant
+/// (the pose of `tests/z80_timing_probes.rs::released`). The Z80 runs from PC 0 at that instant.
+fn z80_released(program: &[u8]) -> (System, u64) {
+    let mut s = booted();
+    s.z80_ram_mut()[..program.len()].copy_from_slice(program);
+    let t = s.scheduler().now();
+    s.run_until(t + 1_000);
+    assert!(
+        !s.z80_running(),
+        "UNMEASURABLE: the Z80 left reset before the test released it"
+    );
+    s.mega_bus(&mut ()).write8(0xA1_1200, 5, 1);
+    assert!(
+        s.z80_running(),
+        "UNMEASURABLE: the reset release did not latch"
+    );
+    let at = s.scheduler().now();
+    (s, at)
+}
+
+/// **A Z80 YM/PSG write is reported at its 68000-map address, `via: z80`, with the Z80's own PC and the
+/// clock at the start of its instruction** (contract §6, *The Z80 and the watch surface*). Before §11.52 a
+/// `$A04000` watch saw nothing and the writes appeared at `$004000`, a cartridge-ROM address.
+#[test]
+fn a_z80_sound_chip_write_is_reported_at_its_68000_map_address_via_z80() {
+    let (mut s, at) = z80_released(YM_PSG_PROGRAM);
+    let mut wp = Watchpoints::new(64);
+    let ym = wp.add_watch(0xA0_4000..=0xA0_4003, WatchOp::Write, "ym");
+    let psg = wp.add_watch(0xA0_7F11..=0xA0_7F11, WatchOp::Write, "psg");
+    s.run_until_with_sink(at + 2_000, &mut wp);
+
+    let hits = wp.hits();
+    assert_eq!(hits.len(), 3, "two YM writes and one PSG write: {hits:#?}");
+    for (h, &(addr, value, pc, t)) in hits.iter().zip(&YM_PSG_WRITES) {
+        assert_eq!(h.watch, if addr == 0xA0_7F11 { psg } else { ym });
+        assert_eq!(h.space, WatchSpace::Bus);
+        assert_eq!(
+            h.addr, addr,
+            "the 68000-map address, never the Z80-side one"
+        );
+        assert_eq!(h.via, WatchVia::Z80, "the Z80 drove it");
+        assert_eq!(
+            h.pc, pc,
+            "the Z80's PC at the start of the writing instruction"
+        );
+        assert_eq!(h.value, value);
+        assert_eq!((h.op, h.size), (BusOp::Write, Size::Byte));
+        assert_eq!(
+            h.mclk,
+            at + t * MCLK_PER_Z80_CYCLE,
+            "the clock at the start of the Z80 instruction"
+        );
+        assert_eq!(
+            h.frame,
+            h.mclk / MCLK_PER_FRAME,
+            "the frame that clock falls in"
+        );
+    }
+    // The stamp carries the master too, so `first`/`last` never read a Z80 pc as a 68000 one.
+    let r = wp.watch(ym).unwrap();
+    assert_eq!(
+        r.first.map(|s| (s.pc, s.via)),
+        Some((0x0002, WatchVia::Z80))
+    );
+    assert_eq!(r.last.map(|s| (s.pc, s.via)), Some((0x0007, WatchVia::Z80)));
+}
+
+/// **Nothing the Z80 does is reported at its Z80-side address** (§6: "A server MUST NOT report a Z80 access
+/// at its Z80-side address"), and the instrument is live while it says so.
+#[test]
+fn no_z80_access_is_reported_at_its_z80_side_address() {
+    let (mut s, at) = z80_released(YM_PSG_PROGRAM);
+    let mut wp = Watchpoints::new(64);
+    wp.add_watch(0x00_4000..=0x00_4003, WatchOp::Any, "z80-side ym");
+    wp.add_watch(0x00_7F11..=0x00_7F11, WatchOp::Any, "z80-side psg");
+    let live = wp.add_watch(0xA0_4000..=0xA0_7F11, WatchOp::Write, "68k-map");
+    s.run_until_with_sink(at + 2_000, &mut wp);
+    assert_eq!(
+        wp.watch(live).unwrap().matched,
+        3,
+        "positive control: the same run's Z80 writes did reach the 68000-map watch"
+    );
+    assert!(
+        wp.hits().iter().all(|h| h.addr >= 0xA0_0000),
+        "no hit below $A00000: {:#?}",
+        wp.hits()
+    );
+}
+
+/// **Of the Z80's accesses only its YM/PSG register writes are offered** (§6): a window read of cartridge
+/// ROM, a write to its own RAM and its opcode fetches produce no hit, over the 68000 addresses of exactly
+/// those targets, in a run where the Z80 demonstrably made them.
+#[test]
+fn a_z80_access_that_is_not_a_sound_chip_write_is_never_offered() {
+    // LD A,($8000) ; LD ($1000),A ; HALT — bank 0, so the read is cartridge ROM $000000.
+    let program: &[u8] = &[0x3A, 0x00, 0x80, 0x32, 0x00, 0x10, 0x76];
+    let (mut s, at) = z80_released(program);
+    let rom0 = s.mega_bus(&mut ()).read8(0x00_0000, 5).0;
+    s.z80_ram_mut()[0x1000] = !rom0;
+    let mut wp = Watchpoints::new(64);
+    let rom = wp.add_watch(
+        0x00_0000..=0x00_0000,
+        WatchOp::Any,
+        "rom byte the Z80 reads",
+    );
+    let zram = wp.add_watch(
+        0xA0_1000..=0xA0_1000,
+        WatchOp::Any,
+        "z80 ram byte it writes",
+    );
+    let fetch = wp.add_watch(0xA0_0000..=0xA0_0006, WatchOp::Any, "its opcode bytes");
+    s.run_until_with_sink(at + 2_000, &mut wp);
+    assert_eq!(
+        s.z80_ram_mut()[0x1000],
+        rom0,
+        "UNMEASURABLE: the Z80 did not read ROM and store it"
+    );
+    assert!(wp.seen() > 0, "the instrument rode the run");
+    for id in [rom, zram, fetch] {
+        let r = wp.watch(id).unwrap();
+        assert_eq!(
+            r.matched, 0,
+            "'{}': no Z80 access other than a YM/PSG write is offered",
+            r.label
+        );
+    }
+    assert!(wp.hits().iter().all(|h| h.via != WatchVia::Z80));
+}
+
+/// **A Z80 hit never counts toward `stopAfter`** (§6): it is recorded and counted in `matched`, and the run
+/// still ends at its deadline. A watch stop promises that the 68000 instruction before `pc` caused it.
+#[test]
+fn a_z80_hit_is_counted_but_never_ends_a_run() {
+    let (mut s, at) = z80_released(YM_PSG_PROGRAM);
+    let mut wp = Watchpoints::new(64);
+    let ym = wp.add(Watch::bus(0xA0_4000..=0xA0_4003, WatchOp::Write, "ym").stop_after(1));
+    let deadline = at + 2_000;
+    let stop = s.run_until_with_sink(deadline, &mut wp);
+    assert_eq!(
+        wp.watch(ym).unwrap().matched,
+        2,
+        "both Z80 YM writes matched (the count is what makes the stop half non-vacuous)"
+    );
+    assert_eq!(
+        stop.reason,
+        StopReason::DeadlineReached,
+        "two Z80 matches past a stopAfter of 1, and the run still ran to its bound"
+    );
+    assert!(!wp.stop_requested());
+}
+
+/// **The 68000's own YM and PSG writes are still 68000 hits** — `via: bus` with its function code — and one
+/// watch holds both processors' writes to the same register, told apart by `via`. The 68000's `$A07F11`
+/// write is exactly one hit: its Z80-shaped copy for the chip is never offered (it used to land at `$007F11`,
+/// the F-TRACE-MASTER re-emit).
+#[test]
+fn the_68000s_own_sound_chip_writes_stay_68000_hits_beside_the_z80s() {
+    let (mut s, at) = z80_released(YM_PSG_PROGRAM);
+    let mut wp = Watchpoints::new(64);
+    let ym = wp.add_watch(0xA0_4000..=0xA0_4003, WatchOp::Write, "ym");
+    let psg = wp.add_watch(0xA0_7F11..=0xA0_7F11, WatchOp::Write, "psg");
+    let raw = wp.add_watch(0x00_7F11..=0x00_7F11, WatchOp::Any, "z80-side psg");
+    let via = wp.add(
+        Watch::bus(0xA0_4000..=0xA0_4003, WatchOp::Write, "ym by via")
+            .mode(WatchMode::Census(CensusKey::Via)),
+    );
+    s.run_until_with_sink(at + 2_000, &mut wp);
+    // The 68000 takes the Z80 bus (its window is open only then) and writes both chips itself.
+    s.mega_bus(&mut ()).write8(0xA1_1100, 5, 1);
+    assert!(
+        s.z80_busreq(),
+        "UNMEASURABLE: the bus request did not latch"
+    );
+    {
+        let mut bus = s.mega_bus(&mut wp);
+        bus.write8(0xA0_4000, 5, 0x2B);
+        bus.write8(0xA0_7F11, 5, 0x9F);
+    }
+
+    let of = |id| -> Vec<(WatchVia, u8, u32)> {
+        wp.hits()
+            .iter()
+            .filter(|h| h.watch == id)
+            .map(|h| (h.via, h.fc, h.addr))
+            .collect()
+    };
+    let ym_hits = of(ym);
+    assert_eq!(ym_hits.len(), 3, "{ym_hits:?}");
+    assert_eq!(
+        ym_hits[2],
+        (WatchVia::Bus, 5, 0xA0_4000),
+        "the 68000's own write, with its fc"
+    );
+    assert!(ym_hits[..2].iter().all(|&(v, _, _)| v == WatchVia::Z80));
+    let psg_hits = of(psg);
+    assert_eq!(
+        psg_hits
+            .iter()
+            .filter(|&&(v, _, _)| v == WatchVia::Bus)
+            .count(),
+        1,
+        "the 68000's $A07F11 write is one hit, not two: {psg_hits:?}"
+    );
+    assert_eq!(psg_hits.last(), Some(&(WatchVia::Bus, 5, 0xA0_7F11)));
+    assert_eq!(
+        wp.watch(raw).unwrap().matched,
+        0,
+        "no copy lands at $007F11"
+    );
+    assert_eq!(
+        wp.watch(via).unwrap().census,
+        Some(vec![(0, 1), (3, 2)]),
+        "censusKey via: 0 = bus (the 68000), 3 = z80"
+    );
+}

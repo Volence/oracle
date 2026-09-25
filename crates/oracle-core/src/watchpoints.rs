@@ -8,7 +8,8 @@
 //! that hit a watched range — each hit attributed to the instruction that drove it (its PC) and to the master
 //! that drove it (the 68000 vs another master, via the event's function code) plus the value, size, op,
 //! frame, and master clock. Delivered is the operative word: the Z80's accesses are not, apart from its
-//! FM/PSG register writes (see *Attribution*).
+//! YM2612/PSG register writes, which arrive as [`WatchVia::Z80`] hits at their 68000-map address (see
+//! *Attribution*).
 //!
 //! It observes only: it never touches CPU or memory state, is stored by the *caller* (never by `System`), and
 //! so sits in neither frozen currency and can never move a state hash. The null-sink hot path is untouched —
@@ -27,8 +28,11 @@
 //!
 //! The **master clock** enters through the other seam: the 68000 bus adapter delivers every access through
 //! [`BusEventSink::on_event_at`], which carries the absolute mclk of the access. The Z80 adapter delivers
-//! only its FM/PSG register writes (F-Z80-ACCESSES-UNWATCHED): its opcode fetches, its reads and writes
-//! through the `$8000` bank window, its own RAM traffic and its VDP-mirror accesses never reach a sink.
+//! only its YM2612/PSG register writes, through the sound tap ([`BusEventSink::on_sound_tap_at`]), which
+//! carries the Z80's own PC and instruction-start clock; `Watchpoints` reports each at its 68000-map address
+//! (`$A04000-$A04003` / `$A07F11`) with [`WatchVia::Z80`] (contract §6, §11.52). Its opcode fetches, its
+//! reads and writes through the `$8000` bank window, its own RAM traffic and its VDP-mirror accesses never
+//! reach a sink (F-Z80-ACCESSES-UNWATCHED).
 //! `Watchpoints` overrides `on_event_at` to latch the timestamp and then delegates, so a hit's
 //! [`WatchHit::mclk`] is the access's own clock. Three honest caveats, all reported by
 //! [`Watchpoints::caveats`] rather than hidden:
@@ -41,11 +45,11 @@
 //!   instant (`F-SUBLINE-ACCESSMCLK`, `F-SUBLINE-DMASPREAD`).
 //! - Events fed to [`BusEventSink::on_event`] directly (the phase-0 synthetic `SystemBus`, hand-written unit
 //!   tests) carry no clock at all, so `mclk` holds the last latched value — `0` if none was ever supplied.
-//! - The **Z80's** accesses are missing, not merely untimed. A bus watch over a range the Z80 can reach
-//!   (`Z80_REACHABLE_68K`, derived from `z80::bus::Z80Bus` and pinned against it) is told its counts leave
-//!   the Z80 out; a write watch over `$004000-$004003` or `$007F11` is told that the Z80's FM/PSG writes,
-//!   emitted at those raw Z80 addresses with `fc 0`, match there as if they were cartridge-ROM writes
-//!   (`docs/2026-09-13-z80-timing-currency-design.md` §0.8 and §5).
+//! - The **Z80's** accesses other than its YM/PSG writes are missing, not merely untimed. A bus watch over a
+//!   range the Z80 can reach (`Z80_REACHABLE_68K`, derived from `z80::bus::Z80Bus` and pinned against it)
+//!   is told its counts leave them out (`docs/2026-09-13-z80-timing-currency-design.md` §5). The caveat
+//!   that the YM/PSG writes matched at their raw Z80 addresses as cartridge-ROM writes (design §0.8)
+//!   retired with contract §11.52, which moved them to their 68000-map addresses.
 //!
 //! ## Spaces: bus (v1) + VDP-internal (v2)
 //!
@@ -90,16 +94,16 @@
 //! `seen = 4_182_339, matched = 0` is self-evidently a live instrument that found nothing; `seen = 0` is
 //! self-evidently a dead one that was never attached. There is no flag to remember and none to forget.
 //!
-//! What a live instrument found nothing *among* is what it was delivered. The Z80's accesses are not
-//! (F-Z80-ACCESSES-UNWATCHED), so over a range the Z80 can reach a zero is a finding about the 68000 alone,
-//! and [`Watchpoints::caveats`] says so for that watch.
+//! What a live instrument found nothing *among* is what it was delivered. The Z80's accesses are not, bar
+//! its YM/PSG register writes (F-Z80-ACCESSES-UNWATCHED), so over a range the Z80 can reach a zero is a
+//! finding about the 68000 alone, and [`Watchpoints::caveats`] says so for that watch.
 //!
 //! Still **deferred**: break-on-hit / execution halt at *instruction* granularity (the core runs
 //! frame-batched; [`Watch::stop_after`] gives the coarse form — end the run at the next instruction boundary
 //! once a watch has fired N times), and any frontend / MCP wiring. Recording is bounded (drop-oldest ring with
 //! a drop count), never a halt.
 
-use crate::bus::{BusEvent, BusEventSink, BusOp, Size};
+use crate::bus::{BusEvent, BusEventSink, BusOp, Size, SoundTapMaster};
 use crate::vdp::{VdpTarget, VdpVia, VdpWrite};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -173,12 +177,22 @@ pub enum WatchSpace {
 
 /// How a recorded write reached its target. `Bus` is a v1 68000 bus access (the master is in [`WatchHit::fc`]:
 /// 5/6 = CPU, 0 = a non-CPU master). `Direct`/`Dma` are v2 VDP-internal writes: `Direct` is a CPU data-port
-/// write, `Dma` is a DMA step — attributed to the instruction that *triggered* the transfer.
+/// write, `Dma` is a DMA step — attributed to the instruction that *triggered* the transfer. `Z80` is the
+/// Z80's own YM2612/SN76489 register write on a bus watch (contract §6 *The Z80 and the watch surface*,
+/// §11.52).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WatchVia {
     Bus,
     Direct,
     Dma,
+    /// **The Z80 drove this access**: one of its YM2612 (`$4000-$4003`) or PSG (`$7F11`) register writes,
+    /// the only Z80 access a watch is offered. The hit lives in [`WatchSpace::Bus`] at the register's
+    /// **68000-map** address (`$A04000-$A04003` / `$A07F11`, where a 68000 writes the same register), its
+    /// [`WatchHit::pc`] is the **Z80's** PC at the start of the writing instruction, its
+    /// [`WatchHit::mclk`] that instruction's start clock, and its [`WatchHit::fc`] means nothing (the Z80
+    /// has no 68000 function code; it is `0`, and no `fc` filter matches it). It never counts toward
+    /// [`Watch::stop_after`].
+    Z80,
 }
 
 /// Handle for a registered watch, returned by [`Watchpoints::add`] and carried on every hit it produced
@@ -217,8 +231,9 @@ pub enum CensusKey {
     /// The access address shifted right by `n` bits — one bucket per page/region (`AddrPage(8)` = 256-byte
     /// pages). Shifts ≥ 32 saturate to 31.
     AddrPage(u8),
-    /// The 68000 function code. **On a VDP-internal watch this is always 0** (there is no bus function code);
-    /// and on the PSG port it cannot attribute a master at all — see [`Watchpoints::caveats`].
+    /// The 68000 function code. **On a VDP-internal watch this is always 0** (there is no bus function code),
+    /// and a [`WatchVia::Z80`] hit, which has no function code either, is grouped under `0` too: separate the
+    /// Z80's writes with [`CensusKey::Via`], which gives them their own key.
     Fc,
     /// The bus operation (`0` = Read, `1` = Write, `2` = TAS).
     Op,
@@ -230,7 +245,8 @@ pub enum CensusKey {
     /// `0` otherwise. This is the recurring open-bus word shape (a word access whose halves are the same byte).
     ValueHiEqLo,
     /// **How the access reached its target** — `0` = [`WatchVia::Bus`], `1` = [`WatchVia::Direct`] (a CPU
-    /// data-port write), `2` = [`WatchVia::Dma`]. The CPU-vs-DMA group-by for a **VDP-internal** watch.
+    /// data-port write), `2` = [`WatchVia::Dma`], `3` = [`WatchVia::Z80`] (contract §11.52). The CPU-vs-DMA
+    /// group-by for a **VDP-internal** watch, and the 68000-vs-Z80 one over the YM/PSG registers.
     ///
     /// [`CensusKey::Fc`] provably cannot answer that question there: `on_vdp_write` hardwires `fc: 0` because
     /// a VDP-internal write has no bus function code, so an `Fc` census over a VRAM/CRAM/VSRAM watch reports
@@ -259,6 +275,7 @@ impl CensusKey {
                 WatchVia::Bus => 0,
                 WatchVia::Direct => 1,
                 WatchVia::Dma => 2,
+                WatchVia::Z80 => 3,
             },
         }
     }
@@ -281,7 +298,9 @@ impl CensusKey {
             CensusKey::Via => match key {
                 0 => "bus".to_string(),
                 1 => "direct".to_string(),
-                _ => "dma".to_string(),
+                2 => "dma".to_string(),
+                3 => "z80".to_string(),
+                _ => format!("via={key}"),
             },
         }
     }
@@ -300,6 +319,10 @@ pub struct Stamp {
     pub mclk: u64,
     /// The monotonic id of the matched access ([`WatchHit::seq`]).
     pub seq: u64,
+    /// How the stamped access reached its target ([`WatchHit::via`]). Carried because a stamp's `pc` is the
+    /// **Z80's** when this is [`WatchVia::Z80`] and would otherwise be read as a 68000 PC (contract
+    /// `$defs/watchStamp.via`, §11.52).
+    pub via: WatchVia,
 }
 
 /// A watch to register — the builder behind [`Watchpoints::add`].
@@ -431,6 +454,10 @@ struct WatchSpec {
     label: String,
     // --- aggregation (every mode) ---
     matched: u64,
+    /// The matches that count toward [`stop_after`](Watch::stop_after): every match except a
+    /// [`WatchVia::Z80`] one (contract §6: a Z80 hit is recorded and counted in `matched`, but never ends a
+    /// run — a watch stop promises the 68000 instruction before `pc` caused it).
+    stop_matched: u64,
     first: Option<Stamp>,
     last: Option<Stamp>,
     // --- aggregation (Census only) ---
@@ -459,7 +486,8 @@ impl WatchSpec {
         self.space == hit.space
             && self.op.matches(hit.op)
             && (self.lo..=self.hi).contains(&hit.addr)
-            && self.fc.is_none_or(|f| f == hit.fc)
+            // A Z80 hit has no 68000 function code, so a watch that asked for one never matches it.
+            && self.fc.is_none_or(|f| hit.via != WatchVia::Z80 && f == hit.fc)
             && self.size.is_none_or(|s| s == hit.size)
             && self.addr_parity.is_none_or(|p| p.matches(hit.addr))
     }
@@ -467,11 +495,15 @@ impl WatchSpec {
     /// Fold one matched access into this watch's aggregates.
     fn observe(&mut self, hit: &WatchHit) {
         self.matched += 1;
+        if hit.via != WatchVia::Z80 {
+            self.stop_matched += 1;
+        }
         let stamp = Stamp {
             pc: hit.pc,
             frame: hit.frame,
             mclk: hit.mclk,
             seq: hit.seq,
+            via: hit.via,
         };
         if self.first.is_none() {
             self.first = Some(stamp);
@@ -494,18 +526,20 @@ impl WatchSpec {
         }
     }
 
-    /// Whether this watch has reached its stop-after threshold.
+    /// Whether this watch has reached its stop-after threshold. Counted over [`stop_matched`](Self::stop_matched),
+    /// never `matched`: a [`WatchVia::Z80`] hit never ends a run (contract §6, §11.52).
     fn wants_stop(&self) -> bool {
-        self.stop_after.is_some_and(|n| self.matched >= n)
+        self.stop_after.is_some_and(|n| self.stop_matched >= n)
     }
 }
 
 /// A recorded access that hit a watch. `pc` is the instruction that drove it (from the step-boundary stamp);
 /// `fc` is the 68000 function code of the access (5 = supervisor data, 6 = supervisor program; a non-68000
 /// master reports 0), so a hit attributes to both *which instruction* and *which master* drove the access.
-/// In the real run loop `fc 0` is the Z80's FM/PSG tap or the 68000's own `$A07F11` PSG write re-emitted
-/// Z80-shaped: a DMA never reaches the bus stream (it arrives as a VDP-internal write, `via = Dma`), and the
-/// Z80's other accesses are not delivered at all (see [`Watchpoints::caveats`]). `seq` is a monotonic id
+/// In the real run loop no bus hit carries a meaningful `fc 0`: the Z80's YM/PSG writes arrive as
+/// [`WatchVia::Z80`] hits (whose `fc` means nothing), the 68000's `$A07F11` mirror copy is not offered, a DMA
+/// never reaches the bus stream (it arrives as a VDP-internal write, `via = Dma`), and the Z80's other
+/// accesses are not delivered at all (see [`Watchpoints::caveats`]). `seq` is a monotonic id
 /// assigned to every matched access in order — stable across ring-buffer drops, so a gap in `seq` marks
 /// dropped hits.
 ///
@@ -531,11 +565,14 @@ pub struct WatchHit {
     /// The bus op for a bus access; always [`BusOp::Write`] for a VDP-internal write (a store).
     pub op: BusOp,
     /// The 68000 function code of a bus access (5/6 = CPU, 0 = non-CPU master); `0` for a VDP-internal write
-    /// (there is no bus function code — the CPU-vs-DMA distinction is in [`WatchHit::via`]).
+    /// (there is no bus function code — the CPU-vs-DMA distinction is in [`WatchHit::via`]) and for a
+    /// [`WatchVia::Z80`] hit (the Z80 has none; the wire omits `fc` for both).
     pub fc: u8,
     /// How the write reached the target — the CPU-vs-DMA attribution for VDP writes ([`WatchVia::Bus`] for a
-    /// v1 bus access).
+    /// 68000 bus access, [`WatchVia::Z80`] for the Z80's YM/PSG register writes).
     pub via: WatchVia,
+    /// The PC of the instruction that drove the access: the 68000's, or the **Z80's** for a
+    /// [`WatchVia::Z80`] hit (never resolve that one against the 68000 listing).
     pub pc: u32,
     pub frame: u64,
     /// Absolute emulated master clock of the access, from [`BusEventSink::on_event_at`]. **Step-granular for
@@ -567,7 +604,9 @@ pub struct WatchReport {
     /// Reported because a watch left armed with this set is the one that can change a *later* capture's
     /// outcome, and a reader who cannot see it has to discover it by having a run end somewhere unexpected.
     /// It is also what lets a consumer name *which* watch ended a run: [`Watchpoints::stop_requested`] is a
-    /// single bool over all of them, and `matched >= stop_after` on a report identifies the one.
+    /// single bool over all of them, and a report whose 68000 matches reached `stop_after` identifies the
+    /// one — `matched >= stop_after` does when the watch saw no [`WatchVia::Z80`] hit, which never counts
+    /// toward the threshold (contract §6, §11.52).
     pub stop_after: Option<u64>,
     /// How many accesses this watch matched — counted in every mode, including the modes that store nothing.
     pub matched: u64,
@@ -646,6 +685,7 @@ impl Watchpoints {
             stop_after: w.stop_after,
             label: w.label,
             matched: 0,
+            stop_matched: 0,
             first: None,
             last: None,
             census: BTreeMap::new(),
@@ -845,18 +885,10 @@ impl Watchpoints {
                 self.vdp_matched
             ));
         }
+        // (The F-TRACE-MASTER caveat — "an fc census over the PSG port cannot attribute a master" — retired
+        // with contract §11.52: the 68000's `$A07F11` write is one hit at `$A07F11` with its own fc, and its
+        // Z80-shaped mirror copy is no longer offered to a watch at all.)
         for s in &self.specs {
-            if s.mode == WatchMode::Census(CensusKey::Fc)
-                && s.space == WatchSpace::Bus
-                && (overlaps(s, 0x7F11) || overlaps(s, 0xC0_0011))
-            {
-                out.push(format!(
-                    "watch #{} '{}': an fc census over the PSG port cannot attribute a master. A 68000 \
-                     write through the Z80 window is re-emitted Z80-shaped (addr $7F11, fc 0), so both \
-                     master signals read as Z80 there (F-TRACE-MASTER).",
-                    s.id.0, s.label
-                ));
-            }
             if s.keys_capped {
                 out.push(format!(
                     "watch #{} '{}': census hit its {}-key cap, so distinct_keys is a LOWER BOUND and {} \
@@ -879,38 +911,19 @@ impl Watchpoints {
                 ("this range", "it")
             };
             out.push(format!(
-                "{names}: the Z80 can reach {range}, and its accesses are not delivered to watchpoints \
-                 (F-Z80-ACCESSES-UNWATCHED). Its opcode fetches, its reads and writes through the $8000 bank \
-                 window and its own RAM traffic never reach this sink; only its FM/PSG register writes do, \
-                 at their raw Z80 addresses. Every Z80 access to {it} is missing from the counts here, so \
-                 zero Z80 hits is the instrument being absent, not a negative finding."
+                "{names}: the Z80 can reach {range}, and of its accesses a watch is offered only its \
+                 YM2612/PSG register writes, at their 68000-map addresses $A04000-$A04003 / $A07F11 with \
+                 via z80 (contract §6, §11.52). Its opcode fetches, its reads, its own RAM traffic, its \
+                 $8000 bank-window accesses and its VDP-mirror accesses are not delivered to watchpoints \
+                 (F-Z80-ACCESSES-UNWATCHED), so every such Z80 access to {it} is missing from the counts \
+                 here, and zero Z80 hits is the instrument being absent, not a negative finding."
             ));
         }
-        if let Some((names, many)) = labels_where(&self.specs, |s| {
-            s.op != WatchOp::Read
-                && Z80_FM_PSG_TAP
-                    .iter()
-                    .any(|&(lo, hi)| z80_shaped_could_match(s, lo, hi))
-        }) {
-            let covers = if many {
-                "these ranges cover"
-            } else {
-                "this range covers"
-            };
-            out.push(format!(
-                "{names}: {covers} $004000-$004003 or $007F11, the raw Z80 addresses at which the Z80's \
-                 FM/PSG register writes are emitted (fc 0; the 68000's own PSG write through $A07F11 is \
-                 re-emitted at $007F11 the same way, F-TRACE-MASTER). They match here as if they were \
-                 writes to cartridge ROM; filter on a 68000 function code to exclude them."
-            ));
-        }
+        // (Caveat 2 — the Z80's FM/PSG writes matching at their raw Z80 addresses `$004000-$004003` /
+        // `$007F11` "as if they were writes to cartridge ROM" — retired with contract §11.52: they are now
+        // reported at their 68000-map addresses, and nothing is offered below `$10000` by the Z80.)
         out
     }
-}
-
-/// Whether a watch's range contains `addr`.
-fn overlaps(s: &WatchSpec, addr: u32) -> bool {
-    (s.lo..=s.hi).contains(&addr)
 }
 
 /// **The 68000-space ranges the Z80 can reach**, derived from the adapter `crate::z80::bus::Z80Bus` rather
@@ -933,20 +946,18 @@ const Z80_REACHABLE_68K: [(u32, u32); 3] = [
     (0xE0_0000, 0xFF_FFFF),
 ];
 
-/// The raw Z80 addresses the Z80 adapter emits its FM/PSG register writes at (`Z80Bus::write`'s tap arm,
-/// `fc 0`, byte-sized). Numerically they are 68000 cartridge-ROM addresses too, which is design §0.8's
-/// collision. Pinned against the adapter, address by address, by
-/// `tests::caveat_two_covers_exactly_the_addresses_the_z80_bus_taps`.
-const Z80_FM_PSG_TAP: [(u32, u32); 2] = [(0x4000, 0x4003), (0x7F11, 0x7F11)];
+/// Where the Z80's own `$0000-$7FFF` space sits in the 68000's map (`$A00000-$A07FFF`): a Z80 sound-chip
+/// write at Z80 address `a` is reported at `Z80_SPACE_IN_68K | a`, the address a 68000 uses for the same
+/// register (contract §6, §11.52). Pinned against the adapter, address by address, by
+/// `tests::the_z80_is_offered_exactly_its_sound_chip_writes_at_their_68000_map_address`.
+const Z80_SPACE_IN_68K: u32 = 0xA0_0000;
 
-/// Whether an access shaped like the Z80's (one byte, either parity, `fc 0`: the shape its FM/PSG tap
-/// already has) could match `s` somewhere in `lo..=hi`. A watch filtered to a 68000 function code, or to a
-/// word or long width, asked for accesses the Z80 cannot make, so the Z80 caveats say nothing to it.
+/// Whether an access shaped like the Z80's (one byte, either parity, no 68000 function code: the shape its
+/// offered YM/PSG writes have) could match `s` somewhere in `lo..=hi`. A watch filtered to any function code
+/// (a Z80 hit never matches one, `WatchSpec::matches`), or to a word or long width, asked for accesses the
+/// Z80 cannot make, so the Z80 caveat says nothing to it.
 fn z80_shaped_could_match(s: &WatchSpec, lo: u32, hi: u32) -> bool {
-    if s.space != WatchSpace::Bus
-        || s.fc.is_some_and(|f| f != 0)
-        || s.size.is_some_and(|w| w != Size::Byte)
-    {
+    if s.space != WatchSpace::Bus || s.fc.is_some() || s.size.is_some_and(|w| w != Size::Byte) {
         return false;
     }
     let (a, b) = (s.lo.max(lo), s.hi.min(hi));
@@ -1025,6 +1036,51 @@ impl BusEventSink for Watchpoints {
         // once here instead of hand-rolled per consumer.
         self.cur_mclk = mclk;
         self.on_event(event);
+    }
+
+    /// **The Z80's YM2612/PSG register writes, reported truthfully** (contract §6, *The Z80 and the watch
+    /// surface*, §11.52). The tap's event is Z80-shaped for the audio consumers (a Z80-side address that in
+    /// this space names cartridge ROM, `fc 0`), and the default hook would hand exactly that to
+    /// [`on_event_at`](BusEventSink::on_event_at), recording a cartridge-ROM write attributed to whatever
+    /// 68000 instruction last crossed a step boundary. This builds the hit the contract describes instead:
+    ///
+    /// - `addr` is the register's **68000-map** address, `$A00000 | addr` (`$A04000-$A04003`, `$A07F11`);
+    /// - `via` is [`WatchVia::Z80`], `fc` is meaningless (`0`, and no `fc` filter matches it);
+    /// - `pc` is the **Z80's** PC at the start of the writing instruction, `mclk` that instruction's start
+    ///   clock, and `frame` the frame that clock falls in (`mclk / MCLK_PER_FRAME`, the same derivation the
+    ///   run loop's step-boundary frame uses — the Z80 catches up behind the 68000, so the 68000's latched
+    ///   frame can be one ahead of the Z80 instruction's);
+    /// - it counts toward `matched`/`seen`/census, and never toward `stop_after`.
+    ///
+    /// The 68000's `$A07F11` mirror copy ([`SoundTapMaster::M68kPsgMirror`]) is **not offered and not
+    /// counted in `seen`**: the 68000's access is already its own ordinary `$A07F11` event, and this copy
+    /// exists only for the chip. None of the Z80's other accesses reaches this sink at all.
+    fn on_sound_tap_at(&mut self, event: BusEvent, mclk: u64, master: SoundTapMaster) {
+        let SoundTapMaster::Z80 { pc } = master else {
+            return;
+        };
+        self.seen += 1;
+        let hit = WatchHit {
+            watch: WatchId(0), // assigned by `dispatch`
+            space: WatchSpace::Bus,
+            addr: Z80_SPACE_IN_68K | (event.addr & 0x7FFF),
+            old: 0,
+            value: event.value,
+            size: event.size,
+            op: event.op,
+            fc: 0, // the Z80 has no 68000 function code; `via` says who drove it
+            via: WatchVia::Z80,
+            pc: u32::from(pc),
+            frame: mclk / crate::system::MCLK_PER_FRAME,
+            // Deliberately not latched into `cur_mclk`: that is the 68000's access clock, and a clockless
+            // `on_event` after this must not inherit the Z80's.
+            mclk,
+            seq: 0, // assigned by `dispatch`
+        };
+        if !self.any_match(&hit) {
+            return;
+        }
+        self.dispatch(hit);
     }
 
     fn on_step_boundary(&mut self, pc: u32, frame: u64) {
@@ -1529,12 +1585,14 @@ mod tests {
             frame: 7,
             mclk: 1_000,
             seq: 0,
+            via: WatchVia::Bus,
         };
         let last = Stamp {
             pc: 0x0200,
             frame: 9,
             mclk: 2_000,
             seq: 1,
+            via: WatchVia::Bus,
         };
         for id in [rec, cnt] {
             let r = wp.watch(id).unwrap();
@@ -1998,33 +2056,57 @@ mod tests {
         assert!(!wp.stop_requested());
     }
 
-    // --- §4.4: the PSG master caveat --------------------------------------------------------------------------
+    // --- §4.4: the PSG master caveat, retired by contract §11.52 --------------------------------------------
 
-    /// An fc census over the PSG port carries the master-conflation caveat: a 68000 write through the Z80
-    /// window is re-emitted Z80-shaped, so *both* master signals read as Z80 there.
+    /// cause: contract §11.52. This row pinned the F-TRACE-MASTER caveat ("an fc census over the PSG port
+    /// cannot attribute a master"), which existed because the 68000's `$A07F11` write was re-emitted
+    /// Z80-shaped (`$7F11`, `fc 0`) into every sink, watches included. That copy now travels the sound tap as
+    /// [`SoundTapMaster::M68kPsgMirror`] and a watch is never offered it, so the caveat is gone and this row
+    /// pins both halves of why: no census over either PSG address draws it, and the mirror copy neither
+    /// matches nor counts in `seen`.
     #[test]
-    fn an_fc_census_over_the_psg_port_carries_the_master_caveat() {
-        let mut wp = Watchpoints::new(0);
-        wp.add(
-            Watch::bus(0x7F11..=0x7F11, WatchOp::Write, "psg.fc")
-                .mode(WatchMode::Census(CensusKey::Fc)),
+    fn the_psg_master_caveat_is_retired_with_the_mirror_copy() {
+        for range in [
+            0xA0_7F11..=0xA0_7F11,
+            0x7F11..=0x7F11,
+            0xC0_0011..=0xC0_0011,
+        ] {
+            let mut wp = Watchpoints::new(0);
+            wp.add(
+                Watch::bus(range.clone(), WatchOp::Write, "psg.fc")
+                    .mode(WatchMode::Census(CensusKey::Fc)),
+            );
+            assert!(
+                wp.caveats().iter().all(|c| !c.contains("F-TRACE-MASTER")),
+                "{range:X?}: {:?}",
+                wp.caveats()
+            );
+        }
+        let mirror = BusEvent {
+            op: BusOp::Write,
+            fc: 0,
+            addr: 0x7F11,
+            size: Size::Byte,
+            value: 0x9F,
+        };
+        let mut wp = Watchpoints::new(16);
+        wp.add_watch(0..=0xFF_FFFF, WatchOp::Any, "everything");
+        wp.on_sound_tap_at(mirror, 1_000, SoundTapMaster::M68kPsgMirror);
+        assert_eq!(
+            (wp.seen(), wp.matched()),
+            (0, 0),
+            "the mirror copy is not offered"
         );
-        assert!(
-            wp.caveats().iter().any(|c| c.contains("F-TRACE-MASTER")),
-            "{:?}",
-            wp.caveats()
+        wp.on_sound_tap_at(mirror, 1_000, SoundTapMaster::Z80 { pc: 0x0C });
+        assert_eq!(
+            (wp.seen(), wp.matched()),
+            (1, 1),
+            "positive control: the Z80's own PSG write through the same hook is"
         );
-
-        // The same census somewhere else draws no such caveat.
-        let mut elsewhere = Watchpoints::new(0);
-        elsewhere.add(
-            Watch::bus(0xFF_0000..=0xFF_FFFF, WatchOp::Write, "ram.fc")
-                .mode(WatchMode::Census(CensusKey::Fc)),
+        assert_eq!(
+            (wp.hits()[0].addr, wp.hits()[0].via),
+            (0xA0_7F11, WatchVia::Z80)
         );
-        assert!(elsewhere
-            .caveats()
-            .iter()
-            .all(|c| !c.contains("F-TRACE-MASTER")));
     }
 
     // --- F-Z80-ACCESSES-UNWATCHED: the two Z80 caveats (design §5) ------------------------------------------
@@ -2036,10 +2118,10 @@ mod tests {
     use crate::z80::bus::Z80Bus;
     use crate::z80::Z80Io;
 
-    /// Caveat 1's marker (caveat 2 must not contain it).
+    /// Caveat 1's marker.
     const Z80_CAVEAT: &str = "F-Z80-ACCESSES-UNWATCHED";
-    /// Caveat 2's marker (caveat 1 must not contain it).
-    const TAP_CAVEAT: &str = "as if they were writes to cartridge ROM";
+    /// Retired caveat 2's marker (contract §11.52): no caveat may carry it any more.
+    const RETIRED_TAP_CAVEAT: &str = "as if they were writes to cartridge ROM";
 
     /// Whether the one-watch facility built from `w` carries a caveat containing `needle`.
     fn caveat_fires(w: Watch, needle: &str) -> bool {
@@ -2143,21 +2225,30 @@ mod tests {
         }
     }
 
-    /// **Caveat 2 covers exactly the addresses the Z80 adapter taps.** Every Z80 address is written once
-    /// through a real [`Z80Bus`] with a recording sink; the events it emits are the FM/PSG tap, and their
-    /// raw Z80 addresses (numerically 68000 cartridge-ROM addresses) are exactly where a one-byte write
-    /// watch must carry the caveat. Their shape (`fc 0`, a byte) is asserted too, because the filter rule
-    /// the caveat applies (silent on a 68000 function code, or on a word or long width) rests on it.
+    /// **The Z80 is offered exactly its YM2612/PSG register writes, at their 68000-map addresses** (contract
+    /// §6, *The Z80 and the watch surface*, §11.52). Every Z80 address is read and then written once through
+    /// a real [`Z80Bus`] whose sink is a `Watchpoints` watching the **whole** 24-bit bus space: the only hits
+    /// are the writes the adapter taps, each at `$A00000 |` its Z80 address, `via` Z80, carrying the PC the
+    /// adapter was stamped with, the adapter's clock and that clock's frame; `seen` equals the hit count, so
+    /// nothing else was even offered. The expected set is derived from the adapter by a second, recording
+    /// pass (the tap's own event addresses), never from a constant. This replaces
+    /// `caveat_two_covers_exactly_the_addresses_the_z80_bus_taps`: the raw-address caveat it pinned retired
+    /// with the collision (cause: §11.52), and no caveat carries its marker.
     #[test]
-    fn caveat_two_covers_exactly_the_addresses_the_z80_bus_taps() {
+    fn the_z80_is_offered_exactly_its_sound_chip_writes_at_their_68000_map_address() {
+        const PC: u16 = 0x1234;
+        let mclk = crate::system::MCLK_PER_FRAME * 3 + 7;
         let rom = vec![0u8; 0x8000];
         let mut z80_ram = vec![0u8; Z80_RAM_SIZE];
         let mut work = vec![0u8; crate::system::RAM_SIZE];
-        let mut bank = 0u16;
         let mut fm = crate::ym2612::Ym2612::new();
         let mut vdp = adapter_vdp();
-        let mut sink: Vec<BusEvent> = Vec::new();
+
+        // Pass 1: which Z80 addresses does the adapter tap at all (a recording sink, the audio consumers'
+        // view through the hook's default).
+        let mut events: Vec<BusEvent> = Vec::new();
         {
+            let mut bank = 0u16;
             let mut bus = Z80Bus::new(
                 &mut z80_ram,
                 &rom,
@@ -2166,31 +2257,81 @@ mod tests {
                 &mut bank,
                 &mut fm,
                 &mut vdp,
-                0,
-                &mut sink,
-            );
+                mclk,
+                &mut events,
+            )
+            .at_instruction(PC);
             for a in 0..=0xFFFFu16 {
+                bus.read(a);
                 bus.write(a, 0x5A);
             }
         }
+        let tapped: std::collections::BTreeSet<u32> = events.iter().map(|e| e.addr).collect();
         assert!(
-            !sink.is_empty(),
+            !tapped.is_empty(),
             "UNMEASURABLE: the adapter tapped no write at all"
         );
-        assert!(
-            sink.iter()
-                .all(|e| e.op == BusOp::Write && e.fc == 0 && e.size == Size::Byte),
-            "the tap's shape is a byte write at fc 0: {sink:?}"
+
+        // Pass 2: the same sweep with a watch over everything.
+        let mut wp = Watchpoints::new(1 << 12);
+        wp.add_watch(0..=0xFF_FFFF, WatchOp::Any, "everything");
+        {
+            let mut bank = 0u16;
+            let mut bus = Z80Bus::new(
+                &mut z80_ram,
+                &rom,
+                CartBanks::IDENTITY,
+                &mut work,
+                &mut bank,
+                &mut fm,
+                &mut vdp,
+                mclk,
+                &mut wp,
+            )
+            .at_instruction(PC);
+            for a in 0..=0xFFFFu16 {
+                bus.read(a);
+                bus.write(a, 0x5A);
+            }
+        }
+        let hits = wp.hits();
+        assert_eq!(
+            wp.seen(),
+            hits.len() as u64,
+            "nothing but the hits below was offered"
         );
-        let tapped: std::collections::BTreeSet<u32> = sink.iter().map(|e| e.addr).collect();
-        for a in 0..=0xFFFFu32 {
+        let got: std::collections::BTreeSet<u32> = hits.iter().map(|h| h.addr).collect();
+        let want: std::collections::BTreeSet<u32> = tapped.iter().map(|&a| 0xA0_0000 | a).collect();
+        assert_eq!(got, want, "each tapped write, at its 68000-map address");
+        assert_eq!(hits.len(), tapped.len(), "each exactly once");
+        for h in hits {
             assert_eq!(
-                caveat_fires(Watch::bus(a..=a, WatchOp::Write, "byte"), TAP_CAVEAT),
-                tapped.contains(&a),
-                "${a:06X}: tapped = {}",
-                tapped.contains(&a)
+                (h.space, h.via, h.op, h.size, h.value),
+                (
+                    WatchSpace::Bus,
+                    WatchVia::Z80,
+                    BusOp::Write,
+                    Size::Byte,
+                    0x5A
+                ),
+                "{h:?}"
+            );
+            assert_eq!(
+                h.pc,
+                u32::from(PC),
+                "the Z80 pc the adapter was stamped with"
+            );
+            assert_eq!(
+                (h.mclk, h.frame),
+                (mclk, 3),
+                "the adapter's clock, and its frame"
             );
         }
+        assert!(
+            wp.caveats().iter().all(|c| !c.contains(RETIRED_TAP_CAVEAT)),
+            "caveat 2 is retired: {:?}",
+            wp.caveats()
+        );
     }
 
     /// The two caveats speak only where an access shaped like the Z80's could match the watch: a byte, either
@@ -2199,7 +2340,13 @@ mod tests {
     fn the_z80_caveats_respect_the_watchs_own_filters() {
         let ram = || Watch::bus(0xFF_0000..=0xFF_00FF, WatchOp::Any, "ram");
         assert!(caveat_fires(ram(), Z80_CAVEAT), "a plain work-RAM watch");
-        assert!(caveat_fires(ram().fc(0), Z80_CAVEAT), "filtered to fc 0");
+        // cause: contract §11.52. This said `fc(0)` still drew the caveat, because the Z80's tap carried
+        // `fc 0`. A Z80 hit now has no function code and no `fc` filter matches it, so a watch filtered to
+        // ANY function code asked for accesses the Z80 cannot make.
+        assert!(
+            !caveat_fires(ram().fc(0), Z80_CAVEAT),
+            "filtered to fc 0: a Z80 access has no function code"
+        );
         assert!(
             !caveat_fires(ram().fc(5), Z80_CAVEAT),
             "filtered to a 68000 function code: it asked for the 68000's accesses only"
@@ -2226,25 +2373,8 @@ mod tests {
             "a VDP-internal space is not the Z80's to reach"
         );
 
-        let fm = |op| Watch::bus(0x4000..=0x4003, op, "fm");
-        assert!(caveat_fires(fm(WatchOp::Write), TAP_CAVEAT));
-        assert!(caveat_fires(fm(WatchOp::Any), TAP_CAVEAT));
-        assert!(
-            !caveat_fires(fm(WatchOp::Read), TAP_CAVEAT),
-            "the tap emits writes only"
-        );
-        assert!(caveat_fires(fm(WatchOp::Write).fc(0), TAP_CAVEAT));
-        assert!(!caveat_fires(fm(WatchOp::Write).fc(6), TAP_CAVEAT));
-        assert!(!caveat_fires(
-            fm(WatchOp::Write).size(Size::Word),
-            TAP_CAVEAT
-        ));
-        let psg = |p| Watch::bus(0x7F10..=0x7F11, WatchOp::Write, "psg").addr_parity(p);
-        assert!(caveat_fires(psg(AddrParity::Odd), TAP_CAVEAT));
-        assert!(
-            !caveat_fires(psg(AddrParity::Even), TAP_CAVEAT),
-            "$7F10 is not tapped, and the tapped $7F11 is odd"
-        );
+        // (The caveat-2 half of this row — the raw `$004000-$004003` / `$007F11` tap addresses — retired with
+        // the caveat, cause: contract §11.52.)
     }
 
     /// Each Z80 caveat is one line naming every watch it covers, and only those: a panel with five work-RAM
@@ -2266,10 +2396,6 @@ mod tests {
             "{z80:?}"
         );
         assert!(!z80[0].contains("'ports'"), "{z80:?}");
-        assert!(
-            !z80[0].contains(TAP_CAVEAT),
-            "the two caveats' markers are disjoint"
-        );
     }
 
     // --- VDP-internal watches (v2) -----------------------------------------------------------------------

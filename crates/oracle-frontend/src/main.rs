@@ -758,9 +758,12 @@ fn dump_hits(watchpoints: &Watchpoints, symbols: Option<&SymbolTable>) {
             WatchVia::Bus => "Bus",
             WatchVia::Direct => "Direct(CPU)",
             WatchVia::Dma => "Dma",
+            WatchVia::Z80 => "Z80",
         };
         // Raw hex stays, always: the symbol is an annotation on the address, never a replacement for it.
+        // A Z80 hit's pc is the Z80's, and the listing is the 68000's (contract §6, §11.52): no symbol.
         let sym = symbols
+            .filter(|_| h.via != WatchVia::Z80)
             .and_then(|t| t.resolve_within(h.pc, MAX_SYMBOL_DISPLACEMENT))
             .map(|r| format!(" {r}"))
             .unwrap_or_default();

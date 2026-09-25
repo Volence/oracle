@@ -323,6 +323,10 @@
         "seq": {
           "type": "integer",
           "minimum": 0
+        },
+        "via": {
+          "const": "z80",
+          "description": "Present iff the stamped access was the Z80's (protocol.md §6); then pc is the Z80's. Absent = the 68000's."
         }
       },
       "additionalProperties": false,
@@ -3923,7 +3927,7 @@
               "vsram"
             ],
             "default": "bus",
-            "description": "Which address space. 'bus' is the 68000 address space (work RAM, ROM, Z80 RAM, I/O, VDP ports); the other three are VDP-INTERNAL byte-address spaces — the 'who wrote this tile / palette entry?' watch. Spaces never cross-trigger: a numeric collision between a bus address and a VRAM byte address matches only the watch in its own space."
+            "description": "Which address space. 'bus' is the 68000 address space (work RAM, ROM, Z80 RAM, I/O, VDP ports); the other three are VDP-INTERNAL byte-address spaces — the 'who wrote this tile / palette entry?' watch. Spaces never cross-trigger: a numeric collision between a bus address and a VRAM byte address matches only the watch in its own space. Of the Z80's accesses, only its YM2612/PSG register writes are offered to a 'bus' watch (protocol.md §6)."
           },
           "addr": {
             "$ref": "#/$defs/hex",
@@ -3971,7 +3975,7 @@
           "stopAfter": {
             "type": "integer",
             "minimum": 1,
-            "description": "Halt the run at the next instruction boundary once this watch has matched N accesses, emitting emulator/stopped with reason 'watchpoint'. ABSENT means the watch never affects when the machine stops. This is stop-on-condition, not an interactive break: the triggering instruction has fully committed when the run ends, and the run was already bounded by its own caller."
+            "description": "Halt the run at the next instruction boundary once this watch has matched N accesses, emitting emulator/stopped with reason 'watchpoint'. ABSENT means the watch never affects when the machine stops. This is stop-on-condition, not an interactive break: the triggering instruction has fully committed when the run ends, and the run was already bounded by its own caller. Accesses with via 'z80' never count toward it (protocol.md §6)."
           },
           "label": {
             "type": "string",
@@ -4255,7 +4259,7 @@
                       "key": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "The grouped value: an address, a written value, or 0=bus/1=direct(CPU)/2=dma for censusKey 'via'."
+                        "description": "The grouped value: an address, a written value, or 0=bus/1=direct(CPU)/2=dma/3=z80 for censusKey 'via'."
                       },
                       "count": {
                         "type": "integer",
@@ -4439,19 +4443,20 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 7,
-                  "description": "68000 function code of the access (5/6 = CPU supervisor data/program, 0 = a non-CPU master). Present IF AND ONLY IF space is 'bus' — a VDP-internal write has no bus function code, and its CPU-vs-DMA attribution is `via`."
+                  "description": "68000 function code of the access (5/6 = 68000 supervisor data/program, 0 = a master that is neither CPU). Present IF AND ONLY IF space is 'bus' and via is not 'z80' — a VDP-internal write has no bus function code, and its CPU-vs-DMA attribution is `via`; a Z80 access has no 68000 function code."
                 },
                 "via": {
                   "enum": [
                     "bus",
                     "direct",
-                    "dma"
+                    "dma",
+                    "z80"
                   ],
-                  "description": "How the access reached its target. 'bus' = a 68000 bus access. 'direct' = a CPU data-port write into VDP memory; 'dma' = a DMA step, attributed to the instruction that TRIGGERED the transfer. This is the CPU-vs-DMA answer for VDP-internal writes, which no function code can give."
+                  "description": "How the access reached its target. 'bus' = a 68000 bus access. 'direct' = a CPU data-port write into VDP memory; 'dma' = a DMA step, attributed to the instruction that TRIGGERED the transfer. This is the CPU-vs-DMA answer for VDP-internal writes, which no function code can give. 'z80' = the Z80 drove it (its YM2612/PSG register writes; protocol.md §6 'The Z80 and the watch surface'): addr is the 68000-map address, fc and symbol are absent, pc is the Z80's."
                 },
                 "pc": {
                   "$ref": "#/$defs/hex",
-                  "description": "PC of the instruction that drove the access, stamped at the step boundary. One instruction driving several accesses (a MOVEM, a read-modify-write) attributes them all to itself."
+                  "description": "PC of the instruction that drove the access, stamped at the step boundary. One instruction driving several accesses (a MOVEM, a read-modify-write) attributes them all to itself. For via 'z80', the Z80's program counter at the start of the writing instruction, never symbolised."
                 },
                 "symbol": {
                   "allOf": [
@@ -4473,7 +4478,7 @@
                 "mclk": {
                   "type": "integer",
                   "minimum": 0,
-                  "description": "Emulated master clock of this hit. INSTRUCTION-GRANULAR whenever `space` is not 'bus' — a VDP-internal write is still drained after the driving CPU step, but it carries the clock the VDP performed the write at rather than borrowing that step's (corrected by §11.15). What remains is instruction granularity: the bus freezes its clock for one 68000 instruction, so a write is located to the start of the instruction that drove it, and every word of one DMA burst shares the transfer's instant. That bound is a standing property of a VDP hit and is stated in §6 rather than repeated as a per-reply caveat (§2.4's advisory: a caveat that is always present is one clients learn to ignore); narrowing it further is the registered follow-up F-SUBLINE-ACCESSMCLK."
+                  "description": "Emulated master clock of this hit. INSTRUCTION-GRANULAR whenever `space` is not 'bus' — a VDP-internal write is still drained after the driving CPU step, but it carries the clock the VDP performed the write at rather than borrowing that step's (corrected by §11.15). What remains is instruction granularity: the bus freezes its clock for one 68000 instruction, so a write is located to the start of the instruction that drove it, and every word of one DMA burst shares the transfer's instant. That bound is a standing property of a VDP hit and is stated in §6 rather than repeated as a per-reply caveat (§2.4's advisory: a caveat that is always present is one clients learn to ignore); narrowing it further is the registered follow-up F-SUBLINE-ACCESSMCLK. Also instruction-granular for via 'z80': the clock at the start of the Z80 instruction."
                 },
                 "seq": {
                   "type": "integer",
@@ -4493,9 +4498,6 @@
                     }
                   },
                   "then": {
-                    "required": [
-                      "fc"
-                    ],
                     "not": {
                       "required": [
                         "old"
@@ -4509,6 +4511,65 @@
                     "not": {
                       "required": [
                         "fc"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "$comment": "The Z80 half of the presence rule (protocol.md §6, 'The Z80 and the watch surface', §11.52): a bus hit carries fc unless the Z80 drove it.",
+                  "if": {
+                    "properties": {
+                      "space": {
+                        "const": "bus"
+                      },
+                      "via": {
+                        "not": {
+                          "const": "z80"
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "fc"
+                    ]
+                  }
+                },
+                {
+                  "$comment": "A Z80 hit is a bus hit with no 68000 function code and no 68000 symbol (protocol.md §6, §11.52).",
+                  "if": {
+                    "properties": {
+                      "via": {
+                        "const": "z80"
+                      }
+                    },
+                    "required": [
+                      "via"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "space": {
+                        "const": "bus"
+                      }
+                    },
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "fc"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "symbol"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "symbolDisp"
+                          ]
+                        }
                       ]
                     }
                   }

@@ -258,6 +258,12 @@ impl Z80 {
         self.fault
     }
 
+    /// The program counter, without building the whole [`Z80Regs`] view: the run loop reads it before every
+    /// step to stamp the instruction the sound tap attributes a YM/PSG write to (contract §6, §11.52).
+    pub(crate) fn pc(&self) -> u16 {
+        self.pc
+    }
+
     /// Test-only: latch `fault` as though the core had refused an encoding, so a test can put a refusal the
     /// live decoder never raises (every encoding is served today) into a snapshot.
     #[cfg(test)]
