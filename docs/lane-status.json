@@ -1,5 +1,5 @@
 {
-  "focus": "The hub accepted the sound-chip watch fix; building it is next, together with aeon. Ready for a clear first.",
+  "focus": "New session up. Next is the sound-chip watch fix with aeon, after a quick trim of our boot notes.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here. Nothing is running; the next session builds the sound-chip watch fix with aeon.",
+  "nextBoundary": "Here. Nothing is running; waiting for your go on the notes trim and then the sound-chip watch fix.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -75,7 +75,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "a clear: nothing is unbanked and this session is at about 196k tokens by the transcript's usage record. The next session builds the sound-chip watch fix.",
+  "awaiting": "your go: trim the boot notes first (at 97 of 100 KB), then build the sound-chip watch fix with aeon.",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T14:58:32Z"
+  "updatedAt": "2026-09-25T14:59:54Z"
 }
