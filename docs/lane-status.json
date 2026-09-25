@@ -1,17 +1,6 @@
 {
-  "focus": "Checking the hub's bank-switching wording against the server, and drafting the sound-chip watch proposal.",
-  "inFlight": [
-    {
-      "what": "Check the hub's bank-blind contract paragraph against the server's real replies",
-      "where": "branch parcel/banked-wire-check",
-      "agent": true
-    },
-    {
-      "what": "Research and draft contract proposal so watches can see the sound chip's reads",
-      "where": "branch parcel/z80-watch-cr",
-      "agent": true
-    }
-  ],
+  "focus": "Two contract proposals are with the hub: bank-switching (mostly ruled) and sound-chip watches.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When both drafts return, I review them and send them to the hub. Nothing lands in the code.",
+  "nextBoundary": "Here. Nothing is running; both drafts are pushed and with the hub.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -47,11 +36,11 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "doing",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "the hub ruling on the drafted contract change",
       "project": "ORACLE-DEFAULT",
-      "title": "A watch never catches the sound chip reading an address. The warning is landed; now drafting the contract change for the full fix, for the hub to rule on."
+      "title": "Sound-chip writes come back from a watch under a wrong address. A fix is drafted and with the hub; building waits on its ruling."
     },
     {
       "id": "LENS-WAVE-1",
@@ -60,14 +49,6 @@
       "blockedBy": "your eyes: the two look-at-it questions in its title",
       "project": "LENS-PASS",
       "title": "Sweep wave 1: both measured fixes landed today. Left: two look-at-it questions for you (how an unreadable save is shown; which rule the two address boxes share)."
-    },
-    {
-      "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "project": "ORACLE-DEFAULT",
-      "title": "The hub adopted the wording-only fix. Now checking every line of it against what the server actually sends; the typed field waits for a game that needs it."
     },
     {
       "id": "ROM-DROP-WAYLAND",
@@ -95,6 +76,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-25T14:02:21Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-25T14:55:32Z"
 }
