@@ -1,12 +1,6 @@
 {
-  "focus": "Checking whether a warning about the sound processor's unwatched memory should reach the tools; fix or proposal.",
-  "inFlight": [
-    {
-      "what": "Leftover sound-processor watch warning: find out if it can be sent, then send it or write a proposal",
-      "where": "branch parcel/z80-wire-caveat",
-      "agent": true
-    }
-  ],
+  "focus": "Nothing left I can do alone: the last job ended in a proposal to retire it; everything else waits on you.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the warning check returns: land it, or send its proposal to the hub. Then only your look rows remain.",
+  "nextBoundary": "Now: nothing running, everything landed. A clear costs nothing.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -34,7 +28,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "blocked",
+      "state": "next",
       "size": "S",
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
@@ -42,11 +36,11 @@
     },
     {
       "id": "F-Z80-WIRE-CAVEAT-ABSENT",
-      "state": "doing",
+      "state": "blocked",
       "size": "S",
-      "blockedBy": null,
+      "blockedBy": "the hub confirming the retirement",
       "project": "ORACLE-DEFAULT",
-      "title": "The watch fix landed; what is left of this warning is small. Check it, then deliver it on the wire or retire it."
+      "title": "Checked: the shared rules already state this sound-processor limit permanently, so sending it per answer would be noise. Proposed retiring it; the hub confirms."
     },
     {
       "id": "LENS-WAVE-1",
@@ -81,7 +75,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
+  "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row; nothing else is mine to do",
   "atBoundary": false,
-  "updatedAt": "2026-09-25T18:11:45Z"
+  "updatedAt": "2026-09-25T18:14:59Z"
 }
