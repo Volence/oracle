@@ -1,6 +1,17 @@
 {
-  "focus": "Drafted how addresses should name ROM slices on bank-switching games; the hub now rules on the proposal.",
-  "inFlight": [],
+  "focus": "Checking the hub's bank-switching wording against the server, and drafting the sound-chip watch proposal.",
+  "inFlight": [
+    {
+      "what": "Check the hub's bank-blind contract paragraph against the server's real replies",
+      "where": "branch parcel/banked-wire-check",
+      "agent": true
+    },
+    {
+      "what": "Research and draft contract proposal so watches can see the sound chip's reads",
+      "where": "branch parcel/z80-watch-cr",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +19,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here. Nothing is running; the draft is pushed and with the hub.",
+  "nextBoundary": "When both drafts return, I review them and send them to the hub. Nothing lands in the code.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -36,11 +47,11 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "From aeon: a watch never catches the sound chip reading an address. The warning half is landed and aeon is told; the full fix needs a contract change and a ruling later."
+      "title": "A watch never catches the sound chip reading an address. The warning is landed; now drafting the contract change for the full fix, for the hub to rule on."
     },
     {
       "id": "LENS-WAVE-1",
@@ -52,11 +63,11 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "blocked",
+      "state": "doing",
       "size": "M",
-      "blockedBy": "the hub ruling on the drafted contract change",
+      "blockedBy": null,
       "project": "ORACLE-DEFAULT",
-      "title": "Written up: the debugger should say which ROM slice an address means. A draft contract change is with the hub; building waits on its ruling."
+      "title": "The hub adopted the wording-only fix. Now checking every line of it against what the server actually sends; the typed field waits for a game that needs it."
     },
     {
       "id": "ROM-DROP-WAYLAND",
@@ -84,6 +95,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-25T14:00:46Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-25T14:02:21Z"
 }
