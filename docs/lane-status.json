@@ -1,6 +1,12 @@
 {
-  "focus": "Sound-chip watch fix and notes trim both landed; aeon is landing its matching change now.",
-  "inFlight": [],
+  "focus": "Checking whether a warning about the sound processor's unwatched memory should reach the tools; fix or proposal.",
+  "inFlight": [
+    {
+      "what": "Leftover sound-processor watch warning: find out if it can be sent, then send it or write a proposal",
+      "where": "branch parcel/z80-wire-caveat",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: both landed and pushed, CI being read. Next is the small warning-delivery row.",
+  "nextBoundary": "When the warning check returns: land it, or send its proposal to the hub. Then only your look rows remain.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -36,7 +42,7 @@
     },
     {
       "id": "F-Z80-WIRE-CAVEAT-ABSENT",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -77,5 +83,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-25T17:26:39Z"
+  "updatedAt": "2026-09-25T18:11:45Z"
 }
