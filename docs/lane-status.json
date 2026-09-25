@@ -1,12 +1,6 @@
 {
-  "focus": "Looking into how addresses should name bytes on bank-switching games; drafting a proposal for the hub.",
-  "inFlight": [
-    {
-      "what": "Research and draft contract proposal for bank-switched addresses (docs only)",
-      "where": "branch parcel/banked-addr-recon",
-      "agent": true
-    }
-  ],
+  "focus": "Drafted how addresses should name ROM slices on bank-switching games; the hub now rules on the proposal.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the draft comes back, I review it and send it to the hub for a ruling. Nothing lands in the code.",
+  "nextBoundary": "Here. Nothing is running; the draft is pushed and with the hub.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -58,11 +52,11 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "doing",
+      "state": "blocked",
       "size": "M",
-      "blockedBy": null,
+      "blockedBy": "the hub ruling on the drafted contract change",
       "project": "ORACLE-DEFAULT",
-      "title": "On bank-switching games an address no longer names one byte over time. Needs a contract change, and no current game needs it yet, so it's worth weighing against the other rows first."
+      "title": "Written up: the debugger should say which ROM slice an address means. A draft contract change is with the hub; building waits on its ruling."
     },
     {
       "id": "ROM-DROP-WAYLAND",
@@ -90,6 +84,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-25T13:15:57Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-25T14:00:46Z"
 }
