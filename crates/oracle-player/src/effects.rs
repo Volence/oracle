@@ -3613,6 +3613,9 @@ mod tests {
         /// it (§11.36 option A): an equate is a value, never an address, and folding the two here would let
         /// a test pass on a door the real server does not have.
         equates: Vec<(&'static str, u32)>,
+        /// An equate whose lookup fails with a code OTHER than the absent-name `-32013`, and that
+        /// refusal. `(name, code, message)`, the same shape as [`Self::refuse_write`].
+        refuse_equate: Option<(&'static str, i64, &'static str)>,
         /// How many whole frames `emulator/run_frames` was asked for, summed.
         frames: u64,
     }
@@ -3626,6 +3629,7 @@ mod tests {
                 refuse_write: None,
                 refuse_addr_lookup: false,
                 equates: Vec::new(),
+                refuse_equate: None,
                 frames: 0,
             }
         }
@@ -3802,6 +3806,16 @@ mod tests {
                 // contract test pins, so this fake cannot make a refusal shape up.
                 "emulator/lookup_equate" => {
                     let name = params["name"].as_str().unwrap_or_default();
+                    if let Some((e, code, msg)) = self.refuse_equate {
+                        if e == name {
+                            return Err(Refusal {
+                                code: Some(code),
+                                reason: None,
+                                message: msg.to_string(),
+                                remedy: None,
+                            });
+                        }
+                    }
                     match self.equates.iter().find(|(n, _)| *n == name) {
                         Some((n, v)) => Ok(json!({"name": n, "value": v})),
                         None => Err(Refusal {
@@ -5737,6 +5751,37 @@ mod tests {
         assert!(
             !published.contains("DERIVED"),
             "a published stride must not read like a derived one: {published}"
+        );
+    }
+
+    /// ⚑ **(c, the other side) ONLY `-32013` FALLS BACK.** Any other failure of the `band_record_len`
+    /// lookup is carried up as the server sent it, and is never read as "this listing predates the equate".
+    ///
+    /// The code used is `-32012` (*no listing is loaded*), and it is realistic at exactly this point even
+    /// though five lookups against the same listing have just succeeded: each lookup is its own bus call,
+    /// and `emulator/reload_rom` from any other client on the bus drops the symbol table between them
+    /// when the new image does not match it (`Engine::reload_rom`'s D7 binding check sets
+    /// `self.symbols = None`). Falling back there would print "DERIVED, not published: this listing
+    /// does not carry `band_record_len`" about a listing that is no longer loaded at all — the stride
+    /// labelled with a cause that is false. A catch-all `Err(_) => None` passed every other row.
+    #[test]
+    fn a_band_record_len_lookup_that_fails_other_than_unpublished_is_carried_up_not_derived() {
+        let mut f = armed(2);
+        f.refuse_equate = Some((
+            RECORD_LEN_EQU,
+            -32012,
+            "no symbols loaded: call emulator/load_symbols first",
+        ));
+        let e = hook(&mut f).expect_err(
+            "a -32012 on the band_record_len lookup must refuse, not fall back to Derived",
+        );
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (
+                Some(-32012),
+                "no symbols loaded: call emulator/load_symbols first"
+            ),
+            "the server's own refusal must be carried up unchanged: {e:?}"
         );
     }
 
