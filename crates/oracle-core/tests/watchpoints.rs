@@ -1048,14 +1048,14 @@ fn a_z80_hit_is_counted_but_never_ends_a_run() {
     let deadline = at + 2_000;
     let stop = s.run_until_with_sink(deadline, &mut wp);
     assert_eq!(
+        stop.reason,
+        StopReason::DeadlineReached,
+        "Z80 matches past a stopAfter of 1, and the run still ran to its bound"
+    );
+    assert_eq!(
         wp.watch(ym).unwrap().matched,
         2,
         "both Z80 YM writes matched (the count is what makes the stop half non-vacuous)"
-    );
-    assert_eq!(
-        stop.reason,
-        StopReason::DeadlineReached,
-        "two Z80 matches past a stopAfter of 1, and the run still ran to its bound"
     );
     assert!(!wp.stop_requested());
 }

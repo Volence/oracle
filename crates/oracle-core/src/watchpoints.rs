@@ -2228,10 +2228,11 @@ mod tests {
     /// **The Z80 is offered exactly its YM2612/PSG register writes, at their 68000-map addresses** (contract
     /// §6, *The Z80 and the watch surface*, §11.52). Every Z80 address is read and then written once through
     /// a real [`Z80Bus`] whose sink is a `Watchpoints` watching the **whole** 24-bit bus space: the only hits
-    /// are the writes the adapter taps, each at `$A00000 |` its Z80 address, `via` Z80, carrying the PC the
-    /// adapter was stamped with, the adapter's clock and that clock's frame; `seen` equals the hit count, so
-    /// nothing else was even offered. The expected set is derived from the adapter by a second, recording
-    /// pass (the tap's own event addresses), never from a constant. This replaces
+    /// are the five registers the contract names — `$A04000-$A04003` for the YM2612 and `$A07F11` for the
+    /// PSG, once each — `via` Z80, carrying the PC the adapter was stamped with, the adapter's clock and that
+    /// clock's frame; `seen` equals the hit count, so nothing else was even offered. A first, recording pass
+    /// pins the other side of the hook: the audio consumers (the default forward) still receive exactly
+    /// those writes at their Z80-side addresses, `fc 0`. This replaces
     /// `caveat_two_covers_exactly_the_addresses_the_z80_bus_taps`: the raw-address caveat it pinned retired
     /// with the collision (cause: §11.52), and no caveat carries its marker.
     #[test]
@@ -2266,11 +2267,15 @@ mod tests {
                 bus.write(a, 0x5A);
             }
         }
-        let tapped: std::collections::BTreeSet<u32> = events.iter().map(|e| e.addr).collect();
-        assert!(
-            !tapped.is_empty(),
-            "UNMEASURABLE: the adapter tapped no write at all"
+        // Contract §6: "`$A04000–$A04003` for the YM2612, `$A07F11` for the PSG".
+        const OFFERED: [u32; 5] = [0xA0_4000, 0xA0_4001, 0xA0_4002, 0xA0_4003, 0xA0_7F11];
+        let tapped: Vec<u32> = events.iter().map(|e| e.addr).collect();
+        assert_eq!(
+            tapped,
+            OFFERED.map(|a| a & 0x7FFF).to_vec(),
+            "the audio consumers see each sound-chip write once, at its Z80-side address"
         );
+        assert!(events.iter().all(|e| e.fc == 0 && e.size == Size::Byte));
 
         // Pass 2: the same sweep with a watch over everything.
         let mut wp = Watchpoints::new(1 << 12);
@@ -2300,10 +2305,12 @@ mod tests {
             hits.len() as u64,
             "nothing but the hits below was offered"
         );
-        let got: std::collections::BTreeSet<u32> = hits.iter().map(|h| h.addr).collect();
-        let want: std::collections::BTreeSet<u32> = tapped.iter().map(|&a| 0xA0_0000 | a).collect();
-        assert_eq!(got, want, "each tapped write, at its 68000-map address");
-        assert_eq!(hits.len(), tapped.len(), "each exactly once");
+        let got: Vec<u32> = hits.iter().map(|h| h.addr).collect();
+        assert_eq!(
+            got,
+            OFFERED.to_vec(),
+            "exactly the contract's five registers, each once, at the 68000-map address"
+        );
         for h in hits {
             assert_eq!(
                 (h.space, h.via, h.op, h.size, h.value),
