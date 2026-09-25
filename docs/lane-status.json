@@ -1,5 +1,5 @@
 {
-  "focus": "Everything I can do alone is landed; the rest waits on your ear (d-51) and your eyes (the look rows).",
+  "focus": "Freshly booted. Everything I can do alone is landed; the rest waits on your ear (d-51) and your eyes (the look rows).",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -67,7 +67,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row; this session is clearable (~213k)",
+  "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row, or a new ask for this lane",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T18:34:29Z"
+  "updatedAt": "2026-09-25T21:02:58Z"
 }
