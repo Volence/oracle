@@ -1207,19 +1207,41 @@ pub fn bands(raw: &[u8]) -> Bands {
 // `parallax_config_pcfg_layer_mask`, `band_entry_band_factor_a_s1`, `MAX_PARALLAX_BANDS`. Those reach a
 // client through `emulator/lookup_equate` (§11.36, already served and already vendored — no contract change
 // was needed for this parcel). So every offset this module writes at is **resolved per gesture from the
-// listing the machine is running with**, exactly as every address already is, and the stride is *derived*
-// from two symbols and one equate rather than believed:
+// listing the machine is running with**, exactly as every address already is.
+//
+// **The stride is PUBLISHED now, and read rather than worked out** (aeon `6e1a4f80`,
+// PUBLISH-BAND-RECORD-LEN, 2026-09-25): `engine/level/parallax.emp` declares
+// `pub equ band_record_len = sizeof(band_record)` directly under the struct, so a listing built at or
+// after that commit carries `EQU band_record_len` — `$20` in `s4.lst`/`s4.debug.lst`, `$0A` in
+// `demo.debug.lst`. [`RECORD_LEN_EQU`] is that name. It is per game by construction (parallax.emp lowers
+// once per game, with that game's `GAME_SCANLINE_CAPS`), which is the property a transcribed number lacked.
+//
+// **The derivation this module used before is KEPT, in two roles**:
 //
 // ```text
 // span   = Parallax_Scratch_Config_End - Parallax_Scratch_Config
 // stride = (span - parallax_config_len) / MAX_PARALLAX_BANDS
 // ```
 //
-// which is the same arithmetic `engine/ram.emp` sizes the buffer with, run backwards. It yields 32 on
-// `s4.debug` and 10 on `demo.debug`, and a build that widens a band record cannot leave this module
-// addressing the old stride. **A non-exact division is a refusal, never a rounded stride**: it means the
-// premise (one header, `MAX_PARALLAX_BANDS` equal-sized records, nothing else in the span) does not hold
-// for this build, and a rounded stride would write into the middle of fields forever after.
+// which is the same arithmetic `engine/ram.emp` sizes the buffer with, run backwards (32 on `s4.debug`, 10
+// on `demo.debug`).
+//
+// 1. **A cross-check on the published stride.** When the listing publishes `band_record_len` and the span
+//    implies a different record size, [`hook`] REFUSES (`recordLenDisagrees`) and names both numbers: the
+//    published record size is X but the span implies Y. That is a gate on a LAYOUT fact, never on an
+//    address — the 2026-09-19 ruling that retired `Channel::drift` — and it means the scratch is not the
+//    one header plus `MAX_PARALLAX_BANDS` equal records this module writes into.
+// 2. **The fallback for a listing that predates `6e1a4f80`**, which on 2026-09-25 was every listing on
+//    this box, since aeon's tree had not been rebuilt. Then the derived stride is used and the readout
+//    SAYS it was derived rather than published ([`StrideSource::Derived`]): loud on what was not
+//    measured, never silent. On this path **a non-exact division is a refusal, never a rounded stride**:
+//    it means the premise (one header, `MAX_PARALLAX_BANDS` equal-sized records, nothing else in the
+//    span) does not hold for this build, and a rounded stride would write into the middle of fields
+//    forever after.
+//
+// ⚑ **`band_record_len` is the PARALLAX band record and nothing else.** The bands channel's
+// [`BAND_RECORD_BYTES`] (44) is the BgAnim band record, a different struct with no published equate; it
+// stays transcribed, with its own stated caveat.
 //
 // # ⚑ EDITING A SCRATCH THAT IS NOT THE CURRENT CONFIG IS THE SILENT NO-OP THIS WHOLE SURFACE EXISTS AGAINST
 //
@@ -1309,6 +1331,14 @@ pub const CONFIG_LEN_EQU: &str = "parallax_config_len";
 /// The equate giving the number of band records the scratch is reserved for. `16` in both shipped games.
 pub const MAX_BANDS_EQU: &str = "MAX_PARALLAX_BANDS";
 
+/// The equate giving `sizeof(band_record)` — the **parallax** band-record stride, published by aeon
+/// `6e1a4f80` (`pub equ band_record_len = sizeof(band_record)`, `engine/level/parallax.emp`). `$20` on
+/// s4, `$0A` on demo. A listing older than that commit does not carry it, and [`hook`] then falls back to
+/// the span derivation and says so ([`StrideSource::Derived`]).
+///
+/// ⚑ Not the BgAnim band record: [`BAND_RECORD_BYTES`] is a different struct with no published equate.
+pub const RECORD_LEN_EQU: &str = "band_record_len";
+
 /// The equate prefix the `parallax_config` header's field offsets are published under.
 pub const HEADER_EQU_PREFIX: &str = "parallax_config_";
 
@@ -1317,9 +1347,11 @@ pub const HEADER_EQU_PREFIX: &str = "parallax_config_";
 /// ⚑ **`band_entry`, not `band_record`.** The struct the scratch strides by is `band_record` — the legacy
 /// `band_entry` plus this game's capability tails — and **only the `band_entry` half publishes equates**
 /// (measured: `s4.debug.lst` carries nine `band_entry_*` rows and `band_entry_len`, and no `band_record_*`
-/// row at all). Every field this module offers is inside that half, which is why the offsets resolve; the
-/// tails' fields are in [`NOT_OFFERED`] for other reasons anyway, so nothing is lost. [`Hook::stride`] is
-/// derived from the span rather than from `band_entry_len`, precisely because the two differ.
+/// FIELD row at all; aeon `6e1a4f80` added the record's SIZE, [`RECORD_LEN_EQU`], and no field rows).
+/// Every field this module offers is inside that half, which is why the offsets resolve; the tails' fields
+/// are in [`NOT_OFFERED`] for other reasons anyway, so nothing is lost. [`Hook::stride`] is never
+/// `band_entry_len`, precisely because the two differ: it is `band_record_len` where published, and the
+/// span derivation otherwise.
 pub const BAND_EQU_PREFIX: &str = "band_entry_";
 
 /// Which half of the buffer a [`Field`] lives in.
@@ -1591,9 +1623,25 @@ pub struct Hook {
     pub header_len: u32,
     /// `MAX_PARALLAX_BANDS` — how many records the buffer is reserved for.
     pub max_bands: u32,
-    /// **Derived, never transcribed**: `(span - header_len) / max_bands`. 32 on `s4.debug`, 10 on
-    /// `demo.debug`. See this section's header for why a transcribed 32 would have been wrong.
+    /// **The parallax band-record stride, never transcribed**: `band_record_len` where the listing
+    /// publishes it (checked against the span), `(span - header_len) / max_bands` where it does not.
+    /// 32 on `s4.debug`, 10 on `demo.debug`. [`Self::stride_from`] says which. See this section's header
+    /// for why a transcribed 32 would have been wrong.
     pub stride: u32,
+    /// **Where [`Self::stride`] came from**, so the readout can say it rather than leave a reader to
+    /// assume the stronger of the two.
+    pub stride_from: StrideSource,
+}
+
+/// **Which of the two sources [`Hook::stride`] was taken from.**
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrideSource {
+    /// The listing publishes [`RECORD_LEN_EQU`] and the span agrees with it. The stride is the engine's
+    /// own `sizeof(band_record)`.
+    Published,
+    /// The listing does not publish [`RECORD_LEN_EQU`] (it predates aeon `6e1a4f80`), so the stride is
+    /// the span derivation `(span - header_len) / max_bands`. Nothing published checked it.
+    Derived,
 }
 
 impl Hook {
@@ -1617,9 +1665,14 @@ impl Hook {
 /// [`SCRATCH_PROC`]'s name (every release build does) and not the buffer refuses on the buffer. See this
 /// section's header for the measurement.
 ///
-/// The refusals are deliberately three rather than one, because they send a person to three different
-/// places: the wrong ROM shape, a listing that predates the hook, and a buffer whose size does not
-/// factor. A single *"nudging unavailable"* would send them to none of them.
+/// The refusals are deliberately four rather than one, because they send a person to four different
+/// places: the wrong ROM shape, a listing that predates the hook, a buffer whose size does not factor
+/// (no published stride), and a published stride the span contradicts. A single *"nudging unavailable"*
+/// would send them to none of them.
+///
+/// ⚑ **An absent `band_record_len` is NOT a refusal**: it is the fallback, keyed on the server's own
+/// `-32013` (*this listing does not publish that name*) and on nothing else. Any other failure of that
+/// lookup is carried up as it came.
 pub fn hook(c: &mut impl Caller) -> Result<Hook, Refusal> {
     // ⚑ CONDITION 1, FIRST: the destination. §5.3's ordering, and the reason a release build's
     // `Parallax_InstallScratch` row cannot mislead this function.
@@ -1635,37 +1688,81 @@ pub fn hook(c: &mut impl Caller) -> Result<Hook, Refusal> {
     let (_, end_raw) = resolve(c, SCRATCH_END)?;
     let header_len = equate(c, CONFIG_LEN_EQU)?;
     let max_bands = equate(c, MAX_BANDS_EQU)?;
-    // The span, and the two ways it can be unusable. Both are refusals with the arithmetic in them,
-    // because a reader who is told "the scratch does not factor" and not the four numbers has nothing to
+    // The published stride, or its absence. Only `-32013` means "this listing does not publish it" —
+    // the COMMON case for any listing built before aeon 6e1a4f80 — and only that falls back.
+    let published = match equate(c, RECORD_LEN_EQU) {
+        Ok(n) => Some(n),
+        Err(e) if e.code == Some(-32013) => None,
+        Err(e) => return Err(e),
+    };
+    // The span, and the ways it can be unusable. Every one is a refusal with the arithmetic in it,
+    // because a reader who is told "the scratch does not factor" and not the numbers has nothing to
     // check.
     let span = end_raw.wrapping_sub(scratch_raw);
-    let coherent = span > header_len && max_bands > 0 && (span - header_len) % max_bands == 0;
-    if !coherent {
-        return Err(Refusal::window(
-            "scratchDoesNotFactor",
-            format!(
-                "`{SCRATCH_END}` - `{SCRATCH}` is {span} bytes, `{CONFIG_LEN_EQU}` is {header_len} and \
-                 `{MAX_BANDS_EQU}` is {max_bands}, and ({span} - {header_len}) does not divide by \
-                 {max_bands}. The band-record stride is DERIVED from those three ({HOOK}, \
-                 `engine/ram.emp`'s own sizing run backwards) rather than transcribed, because it is 32 \
-                 bytes in s4.debug and 10 in demo.debug. A stride that did not divide exactly would be \
-                 rounded, and a rounded stride writes into the middle of a field on every band but the \
-                 first. Nothing was written"
-            ),
-            Some(
-                "check that the loaded listing is the one this ROM was built with; if it is, the scratch \
-                 layout has changed shape and this panel's derivation needs re-reading against \
-                 `engine/ram.emp`"
-                    .to_string(),
-            ),
-        ));
-    }
+    let derived = (span > header_len && max_bands > 0 && (span - header_len) % max_bands == 0)
+        .then(|| (span - header_len) / max_bands);
+    let (stride, stride_from) = match (published, derived) {
+        (Some(p), Some(d)) if p == d => (p, StrideSource::Published),
+        (Some(p), _) => {
+            let implied = match derived {
+                Some(d) => format!("{d}"),
+                None if span > header_len && max_bands > 0 => format!(
+                    "({span} - {header_len}) / {max_bands}, which is not a whole number of bytes"
+                ),
+                None => format!(
+                    "no record at all (a {span}-byte span, a {header_len}-byte header and {max_bands} \
+                     records)"
+                ),
+            };
+            return Err(Refusal::window(
+                "recordLenDisagrees",
+                format!(
+                    "the published record size is {p} but the span implies {implied}. The listing's \
+                     `{RECORD_LEN_EQU}` is {p}; `{SCRATCH_END}` - `{SCRATCH}` is {span} bytes, \
+                     `{CONFIG_LEN_EQU}` is {header_len} and `{MAX_BANDS_EQU}` is {max_bands}, and \
+                     {header_len} + {p} x {max_bands} is {} bytes, not {span}. So the scratch is not one \
+                     header plus {max_bands} records of the published size, and a band write would land \
+                     at an offset neither number vouches for. Nothing was written",
+                    u64::from(header_len) + u64::from(p) * u64::from(max_bands)
+                ),
+                Some(
+                    "check that the loaded listing is the one this ROM was built with; if it is, the \
+                     scratch layout (`engine/ram.emp`) and `sizeof(band_record)` \
+                     (`engine/level/parallax.emp`) have come apart and the engine needs looking at"
+                        .to_string(),
+                ),
+            ));
+        }
+        (None, Some(d)) => (d, StrideSource::Derived),
+        (None, None) => {
+            return Err(Refusal::window(
+                "scratchDoesNotFactor",
+                format!(
+                    "`{SCRATCH_END}` - `{SCRATCH}` is {span} bytes, `{CONFIG_LEN_EQU}` is {header_len} \
+                     and `{MAX_BANDS_EQU}` is {max_bands}, and ({span} - {header_len}) does not divide \
+                     by {max_bands}. This listing does not publish `{RECORD_LEN_EQU}` (it predates aeon \
+                     6e1a4f80), so the band-record stride would have to be DERIVED from those three \
+                     ({HOOK}, `engine/ram.emp`'s own sizing run backwards) rather than transcribed, \
+                     because it is 32 bytes in s4.debug and 10 in demo.debug. A stride that did not \
+                     divide exactly would be rounded, and a rounded stride writes into the middle of a \
+                     field on every band but the first. Nothing was written"
+                ),
+                Some(
+                    "check that the loaded listing is the one this ROM was built with; if it is, the \
+                     scratch layout has changed shape. A listing built at or after aeon 6e1a4f80 \
+                     publishes `band_record_len`, which this panel reads instead of deriving"
+                        .to_string(),
+                ),
+            ));
+        }
+    };
     Ok(Hook {
         scratch_raw,
         span,
         header_len,
         max_bands,
-        stride: (span - header_len) / max_bands,
+        stride,
+        stride_from,
     })
 }
 
@@ -2880,7 +2977,7 @@ pub struct Panel {
     band_read: Option<Result<Bands, String>>,
     /// ⚑ **The nudge surface's state**, and it is deliberately `None` until a gesture asks.
     ///
-    /// The gate ([`hook`]) costs four lookups, and running it every frame to decide whether to grey a
+    /// The gate ([`hook`]) costs six lookups, and running it every frame to decide whether to grey a
     /// control would put four bus calls in a draw path for an answer that changes only when a listing is
     /// loaded. So the controls are drawn live and the gate answers on the gesture, which is the shape
     /// [`Off::At`]'s button already uses for the same reason: whether a symbol is in this build's listing
@@ -2922,7 +3019,10 @@ impl Nudging {
         s.value(&self.hook, field, band, self.equate_of(field)?)
     }
 
-    /// **The derivation, said out loud**, because a stride nobody can see is a stride nobody can check.
+    /// **The stride and its source, said out loud**, because a stride nobody can see is a stride nobody
+    /// can check. A published stride is named as the listing's `band_record_len` and shown agreeing with
+    /// the span; a derived one is named as derived, with the reason (the listing predates aeon
+    /// `6e1a4f80`), so the weaker of the two never passes for the stronger.
     ///
     /// ⚑ **It also states when the listing has moved past [`SCRATCH_NOTED_ADDR`], and says that is fine.**
     /// A reader who compares this panel against `NOTE` §6.1 will find the two addresses disagree. When
@@ -2932,19 +3032,24 @@ impl Nudging {
     /// specific one: the symbol is at the RAM tail inside a size-varying `@shape_divergent` group and
     /// moves on ordinary aeon commits.
     pub fn shape_line(&self) -> String {
+        let h = &self.hook;
         let mut s = format!(
-            "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. The stride \
-             is DERIVED from those ({} - {}) / {}, not transcribed: it is 32 on s4.debug and 10 on \
-             demo.debug.",
-            self.hook.span,
-            self.hook.scratch_raw,
-            self.hook.header_len,
-            self.hook.max_bands,
-            self.hook.stride,
-            self.hook.span,
-            self.hook.header_len,
-            self.hook.max_bands,
+            "the scratch is {} bytes at {:#010X}: a {}-byte header and {} records of {} bytes. ",
+            h.span, h.scratch_raw, h.header_len, h.max_bands, h.stride,
         );
+        s.push_str(&match h.stride_from {
+            StrideSource::Published => format!(
+                "The stride is PUBLISHED: the listing's `{RECORD_LEN_EQU}` = {}, and the span agrees \
+                 ({} - {}) / {} = {}. It is per game, 32 on s4.debug and 10 on demo.debug.",
+                h.stride, h.span, h.header_len, h.max_bands, h.stride,
+            ),
+            StrideSource::Derived => format!(
+                "⚠ The stride is DERIVED, not published: this listing does not carry \
+                 `{RECORD_LEN_EQU}` (it predates aeon 6e1a4f80), so it is ({} - {}) / {} and nothing \
+                 the engine published checked it. It is per game, 32 on s4.debug and 10 on demo.debug.",
+                h.span, h.header_len, h.max_bands,
+            ),
+        });
         if self.hook.scratch_raw != SCRATCH_NOTED_ADDR {
             s.push_str(&format!(
                 " {NOTE} records it at {SCRATCH_NOTED_ADDR:#010X}; this is a RAM-tail symbol in a \
@@ -3508,6 +3613,9 @@ mod tests {
         /// it (§11.36 option A): an equate is a value, never an address, and folding the two here would let
         /// a test pass on a door the real server does not have.
         equates: Vec<(&'static str, u32)>,
+        /// An equate whose lookup fails with a code OTHER than the absent-name `-32013`, and that
+        /// refusal. `(name, code, message)`, the same shape as [`Self::refuse_write`].
+        refuse_equate: Option<(&'static str, i64, &'static str)>,
         /// How many whole frames `emulator/run_frames` was asked for, summed.
         frames: u64,
     }
@@ -3521,6 +3629,7 @@ mod tests {
                 refuse_write: None,
                 refuse_addr_lookup: false,
                 equates: Vec::new(),
+                refuse_equate: None,
                 frames: 0,
             }
         }
@@ -3697,6 +3806,16 @@ mod tests {
                 // contract test pins, so this fake cannot make a refusal shape up.
                 "emulator/lookup_equate" => {
                     let name = params["name"].as_str().unwrap_or_default();
+                    if let Some((e, code, msg)) = self.refuse_equate {
+                        if e == name {
+                            return Err(Refusal {
+                                code: Some(code),
+                                reason: None,
+                                message: msg.to_string(),
+                                remedy: None,
+                            });
+                        }
+                    }
                     match self.equates.iter().find(|(n, _)| *n == name) {
                         Some((n, v)) => Ok(json!({"name": n, "value": v})),
                         None => Err(Refusal {
@@ -5532,24 +5651,17 @@ mod tests {
         );
     }
 
-    /// ⚑ **THE BAND STRIDE IS DERIVED, AND A TRANSCRIBED 32 WOULD HAVE BEEN WRONG ON demo.**
-    ///
-    /// Both spans are measured: `s4.debug` gives `$FFFFEC64 - $FFFFEA46` = 542 → (542-30)/16 = **32**, and
-    /// `demo.debug` gives `$FFFFE60E - $FFFFE550` = 190 → (190-30)/16 = **10**. `NOTE` §6.4 says 32 *"for
-    /// this game"* and this is what that clause costs a panel that reads past it.
-    ///
-    /// ⚑ The two arms differ in **one** thing — the span — and share everything else, so a green here is
-    /// about the derivation and not about two fixtures that happen to agree with themselves.
-    #[test]
-    fn the_band_stride_is_derived_from_the_span_and_is_32_on_s4_and_10_on_demo() {
-        let mut f = armed(2);
-        let h = hook(&mut f).expect("the s4-shaped listing");
-        assert_eq!(
-            (h.span, h.header_len, h.max_bands, h.stride),
-            (542, 30, 16, 32)
-        );
+    /// `EQU band_record_len = $00000020`, the row aeon `6e1a4f80` adds to `s4.lst` and `s4.debug.lst`
+    /// (aeon's `docs/research/2026-09-25-band-record-len.md`, measured on its build). ⚑ The listings on
+    /// this box on 2026-09-25 did NOT yet carry it, which is why [`scratch_equates`] leaves it out.
+    const S4_RECORD_LEN: u32 = 0x20;
+    /// `EQU band_record_len = $0000000A`, the same row in `demo.debug.lst`.
+    const DEMO_RECORD_LEN: u32 = 0x0A;
 
-        let mut g = armed(2)
+    /// [`armed`] with the three scratch symbols moved to `demo.debug.lst`'s addresses and nothing else
+    /// changed, so an s4/demo pair differs in the span alone.
+    fn demo_armed(bands: u8) -> Fake {
+        let mut g = armed(bands)
             .without(SCRATCH)
             .without(SCRATCH_END)
             .without(SCRATCH_ARM);
@@ -5568,12 +5680,184 @@ mod tests {
             DEMO_SCRATCH_END & 0x00FF_FFFF,
             DEMO_SCRATCH_END,
         ));
+        g
+    }
+
+    /// ⚑ **(c) NO `band_record_len` IN THE LISTING: THE STRIDE IS DERIVED, AND IT SAYS SO.** A transcribed
+    /// 32 would have been wrong on demo.
+    ///
+    /// [`scratch_equates`] is the 2026-09-19 listing, which predates aeon `6e1a4f80` — the common case on
+    /// 2026-09-25 and for every older build. Both spans are measured: `s4.debug` gives
+    /// `$FFFFEC64 - $FFFFEA46` = 542 → (542-30)/16 = **32**, and `demo.debug` gives
+    /// `$FFFFE60E - $FFFFE550` = 190 → (190-30)/16 = **10**. `NOTE` §6.4 says 32 *"for this game"* and this
+    /// is what that clause costs a panel that reads past it.
+    ///
+    /// ⚑ The two arms differ in **one** thing — the span — and share everything else, so a green here is
+    /// about the derivation and not about two fixtures that happen to agree with themselves.
+    #[test]
+    fn the_band_stride_is_derived_from_the_span_and_is_32_on_s4_and_10_on_demo() {
+        let mut f = armed(2);
+        let h = hook(&mut f).expect("the s4-shaped listing");
+        assert_eq!(
+            (h.span, h.header_len, h.max_bands, h.stride, h.stride_from),
+            (542, 30, 16, 32, StrideSource::Derived)
+        );
+
+        let mut g = demo_armed(2);
         let h = hook(&mut g).expect("the demo-shaped listing");
         assert_eq!(
-            (h.span, h.stride),
-            (190, 10),
+            (h.span, h.stride, h.stride_from),
+            (190, 10, StrideSource::Derived),
             "demo's band record is 10 bytes, and a 32 written into this crate would address its band 1 \
              inside its band 3"
+        );
+    }
+
+    /// ⚑ **(c) THE FALLBACK IS SAID ON SCREEN**, and the published case never reads like it.
+    ///
+    /// A derived stride is the weaker fact: nothing the engine published checked it. So the readout names
+    /// it as derived, names the equate the listing lacks, and a published stride's readout must not carry
+    /// the derived wording (or the two would read alike and the difference would be invisible).
+    #[test]
+    fn a_listing_without_band_record_len_falls_back_and_the_readout_says_derived() {
+        let line = |f: &mut Fake| {
+            let h = hook(f).expect("the listing");
+            Nudging {
+                hook: h,
+                installed: took(f, &h).expect("the state"),
+                scratch: None,
+                offsets: Vec::new(),
+            }
+            .shape_line()
+        };
+        let derived = line(&mut armed(2));
+        for want in [
+            "The stride is DERIVED, not published",
+            "does not carry `band_record_len`",
+            "(542 - 30) / 16",
+        ] {
+            assert!(
+                derived.contains(want),
+                "a derived stride must say so: {want:?} missing from {derived}"
+            );
+        }
+        let mut f = armed(2);
+        f.equates.push((RECORD_LEN_EQU, S4_RECORD_LEN));
+        let published = line(&mut f);
+        assert!(
+            published.contains("The stride is PUBLISHED: the listing's `band_record_len` = 32"),
+            "{published}"
+        );
+        assert!(
+            !published.contains("DERIVED"),
+            "a published stride must not read like a derived one: {published}"
+        );
+    }
+
+    /// ⚑ **(c, the other side) ONLY `-32013` FALLS BACK.** Any other failure of the `band_record_len`
+    /// lookup is carried up as the server sent it, and is never read as "this listing predates the equate".
+    ///
+    /// The code used is `-32012` (*no listing is loaded*), and it is realistic at exactly this point even
+    /// though five lookups against the same listing have just succeeded: each lookup is its own bus call,
+    /// and `emulator/reload_rom` from any other client on the bus drops the symbol table between them
+    /// when the new image does not match it (`Engine::reload_rom`'s D7 binding check sets
+    /// `self.symbols = None`). Falling back there would print "DERIVED, not published: this listing
+    /// does not carry `band_record_len`" about a listing that is no longer loaded at all — the stride
+    /// labelled with a cause that is false. A catch-all `Err(_) => None` passed every other row.
+    #[test]
+    fn a_band_record_len_lookup_that_fails_other_than_unpublished_is_carried_up_not_derived() {
+        let mut f = armed(2);
+        f.refuse_equate = Some((
+            RECORD_LEN_EQU,
+            -32012,
+            "no symbols loaded: call emulator/load_symbols first",
+        ));
+        let e = hook(&mut f).expect_err(
+            "a -32012 on the band_record_len lookup must refuse, not fall back to Derived",
+        );
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (
+                Some(-32012),
+                "no symbols loaded: call emulator/load_symbols first"
+            ),
+            "the server's own refusal must be carried up unchanged: {e:?}"
+        );
+    }
+
+    /// ⚑ **(a) + (d) A PUBLISHED `band_record_len` THAT AGREES WITH THE SPAN IS THE STRIDE**, on both games.
+    ///
+    /// Expected values are the listings' own rows — `$20` in s4, `$0A` in demo — and the arms differ in
+    /// span and equate only. A panel that used a transcribed 32 on the published path passes s4 and fails
+    /// demo; a panel that ignored the equate reports [`StrideSource::Derived`].
+    #[test]
+    fn a_published_band_record_len_that_agrees_with_the_span_is_the_stride() {
+        let mut f = armed(2);
+        f.equates.push((RECORD_LEN_EQU, S4_RECORD_LEN));
+        let h = hook(&mut f).expect("s4 with its published record size");
+        assert_eq!(
+            (h.stride, h.stride_from),
+            (S4_RECORD_LEN, StrideSource::Published)
+        );
+        assert!(
+            f.calls
+                .iter()
+                .any(|(m, p)| m == "emulator/lookup_equate" && p["name"] == json!(RECORD_LEN_EQU)),
+            "the gate must ask the listing for `{RECORD_LEN_EQU}`: {:?}",
+            f.calls
+        );
+
+        let mut g = demo_armed(2);
+        g.equates.push((RECORD_LEN_EQU, DEMO_RECORD_LEN));
+        let h = hook(&mut g).expect("demo with its published record size");
+        assert_eq!(
+            (h.stride, h.stride_from),
+            (DEMO_RECORD_LEN, StrideSource::Published),
+            "demo publishes 10; a 32 anywhere on this path addresses its band 1 inside its band 3"
+        );
+    }
+
+    /// ⚑ **(b) + (d) A PUBLISHED `band_record_len` THE SPAN CONTRADICTS IS REFUSED, NAMING BOTH NUMBERS.**
+    ///
+    /// The cross-crossed pairs are exactly the transcription error this equate closes: demo's scratch
+    /// with s4's 32 published, and s4's scratch with demo's 10. Either one used as the stride writes band
+    /// 1 onward into the wrong bytes. The refusal is on a LAYOUT fact (record size against buffer size),
+    /// never on an address, and it must say both sizes so a reader can see which side moved.
+    #[test]
+    fn a_published_band_record_len_the_span_contradicts_is_refused_naming_both_numbers() {
+        for (mut f, published, implied) in [
+            (demo_armed(2), S4_RECORD_LEN, 10),
+            (armed(2), DEMO_RECORD_LEN, 32),
+        ] {
+            f.equates.push((RECORD_LEN_EQU, published));
+            let e = hook(&mut f).expect_err("a record size the span contradicts");
+            assert_eq!(e.reason.as_deref(), Some("recordLenDisagrees"), "{e:?}");
+            let want =
+                format!("the published record size is {published} but the span implies {implied}");
+            assert!(
+                e.message.contains(&want),
+                "{want:?} missing from {}",
+                e.message
+            );
+        }
+
+        // And a span that does not factor at all, with a stride published: still that refusal, and it
+        // says the span implies no whole record size rather than inventing one.
+        let mut f = armed(2).without(SCRATCH_END).without(SCRATCH_ARM);
+        f.listing
+            .push(("Parallax_Scratch_Config_End", 0xFF_EC65, 0xFFFF_EC65));
+        f.listing
+            .push(("Parallax_Scratch_Arm", 0xFF_EC65, 0xFFFF_EC65));
+        f.equates.push((RECORD_LEN_EQU, S4_RECORD_LEN));
+        let e = hook(&mut f).expect_err("543 - 30 = 513 does not divide by 16");
+        assert_eq!(e.reason.as_deref(), Some("recordLenDisagrees"), "{e:?}");
+        assert!(
+            e.message.contains(
+                "the published record size is 32 but the span implies (543 - 30) / 16, which is not a \
+                 whole number"
+            ),
+            "{}",
+            e.message
         );
     }
 
