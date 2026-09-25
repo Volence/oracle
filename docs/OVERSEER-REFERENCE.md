@@ -2860,3 +2860,346 @@ alternative was a live rule living only in the log.*
   than from our output, and carries a "WHAT WOULD MAKE THIS TEST WRONG" section naming BlastEm's own known blind spot in
   this very rig."** *(`OVERSEER.md` orig lines 783-784, from `F-TH-PULLUP-UNDISCRIMINATED`.)* Read before writing a
   differential test: the header is where the arm's own limits are stated instead of blurred.
+
+## Moved from OVERSEER.md 2026-09-25 — live lessons and bars from the 09-19 and 09-25 landing narratives, each read at the moment its pointer names
+
+*Each block below is verbatim from `545b45a:docs/OVERSEER.md`, with its original line range, in the boot file's original order. They are landing narratives, and they moved here rather than to `docs/OVERSEER-LOG.md` because each carries a rule or bar someone must know before dispatching, reviewing, landing or reading CI. The superseded `NEXT:` clauses and CI-read notes interleaved with them went to the log under the same date. "Line 479" in `OVERSEER.md`'s `PARALLAX-STRIDE-EQUATE` entry names the aeon-ask block below.*
+
+### `LIVE-EFFECTS-NUDGES` (merge `0a591d7`): a forecast about one struct's fields was made from the other struct's note; a green mutation is a finding about the gate (orig lines 444-472)
+
+**`LIVE-EFFECTS-NUDGES` LANDED 2026-09-19, merge `0a591d7`** (agent tip `7fa9cc6`, seven commits; player only — nothing under
+`crates/oracle-core/src/`, `contract/`, or `PROVENANCE.md`). **The control the owner asked for by name works**: the parallax knobs the landed
+hook makes live, written into the RAM scratch with the install armed, under pause-write-resume.
+⚑ **MY PREMISE WAS WRONG AND IT SHAPED THE PARCEL — the forecast named the WRONG STRUCT.** I briefed *"two numbers, `driver` and `rate_shift`"*
+off §5.2's forecast. **Those are BgAnim BAND-RECORD fields; the hook that landed is the PARALLAX channel's, and a `parallax_config` has neither
+anywhere in it** — verified at this seat against aeon `origin/master`: `rate_shift` appears in `engine/effects/raster*.emp` and
+`engine/level/bg_anim.emp` and **never in `engine/level/parallax.emp`**, whose only mention is a comment pointing at *"BgAnim band driver's"* arm.
+aeon's own §6.5 says it from the other side: *"the answer is **not** the same one."* **So a forecast about one struct's fields was made from the
+other struct's note, and it survived into my brief because I re-derived the HOOK's existence and not the FIELDS' identity.** The right answer is
+**ten** free knobs, not two, and `driver`/`rate_shift` are filed as **wrong channel, not geometry**. §5.2 corrected where it stands.
+▶ **Two further findings that changed the design, both of the class this repo keeps meeting:** (a) **the scratch ADDRESS in the note has already
+moved** — `NOTE` §6.1 says `$FFFFEA26`, the 09-18 listing says **`$FFFFEA46`** — and because it is a RAM-tail symbol in a size-varying group, a
+drift-style refusal would **refuse the feature on a healthy build**, so the panel *states* the disagreement and refuses nothing on it; (b) **the
+band stride is PER GAME** (32 on `s4.debug`, **10** on `demo.debug`), so a transcribed 32 would have addressed demo's band 1 **inside its band 3**
+— every offset is now resolved per gesture from published equates through `emulator/lookup_equate` (already served and vendored, **no CR**), with
+the stride *derived* as `(span − parallax_config_len) / MAX_PARALLAX_BANDS` and a **non-exact division refusing rather than rounding.**
+▶ **The gate is destination-first and NEVER resolves `Parallax_InstallScratch` at all** — the second instance of the `BgAnim_Table_Empty` trap,
+because that proc **appears in a release listing with an address** (its body is DEBUG-gated and an empty label collapses onto its neighbour's)
+while the RAM does not. **"Did the install take"** is `Parallax_Current_Config == Parallax_Scratch_Config` masked to 24 bits — the fact itself,
+not a report of it — with the arm byte read only to separate *serviced and refused* from *never serviced*. **No invented status byte.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE, DEBUG PROFILE:** fmt 0, clippy `-D warnings` 0 (outside a pipe), **91/91 legs by both counts, 3046
+passed / 0 failed / 10 ignored**, end marker reached past the 75-leg point where a reap truncated an earlier run tonight; currency suites 2/3/9/5
+with no golden in the diff. **Red-first reproduced INDEPENDENTLY by restoring the trap** — gate keyed on the release-visible proc, destination no
+longer refusing, shown on disk before the run and restored from committed `0a591d7`: **46 passed / 2 failed, and both guards NAME the property** —
+`the_destination_is_resolved_before_the_arm_cell` and `the_gate_ignores_the_proc_because_its_name_ships_in_a_release_listing`.
+⚑ **The agent's own method correction, which is this lane's invariant 9 arriving through someone else's work: TWO of its twenty mutations read
+GREEN first.** M18's write-path refusal *hid* a draw-path defect (offset 0 is `pcfg_band_count`, so the control would have **displayed the band
+count as the field's value**); M20's assertion **could not fail**, because every digit it matched on also occurs as a prose literal in the sentence
+under test. Both gated and re-run. **A green mutation is a finding about the gate, not about the code.**
+
+### `LIVE-EFFECTS-NUDGES`: the open aeon ask (the "ask at line 479" that `OVERSEER.md`'s `PARALLAX-STRIDE-EQUATE` entry cites) (orig lines 477-479)
+
+▶ **AN OPEN AEON ASK, reported rather than requested:** `NOTE` §2's `driver`/`rate_shift` are **unreachable by anything** — an act's
+`BgAnim_Table` is ROM and **no RAM copy exists in any build shape** — so closing it is this hook's own two-part shape one struct over
+(`BgAnim_Scratch_Table` + `BgAnim_InstallScratch`). A much smaller ask would retire the derivation above: **publish a `band_record_len` equate.**
+
+### `F-LAB-INDEX-ADDR-TRANSCRIBED` (merge `fe518e7`): write the gate against the mechanism, not the instance (orig lines 482-495)
+
+**`F-LAB-INDEX-ADDR-TRANSCRIBED` FIXED 2026-09-19, merge `fe518e7`** (agent tip `7dba687`; player only). `LAB_INDEX_ADDR` is **gone from the
+shipped path**; `Debug_Lab_Index` is resolved per gesture and the name route is unchanged. ⚑ **The false positive was CONCRETE and I verified it
+at this seat: `s4.debug.lst` puts `Player_Pos_Ring` at `$FFFFEE00`, so the stale `$FFFFEE0D` sat 13 bytes INSIDE it — the old guard refused a real
+player-position cell in the cursor's name.** ⚑ **Three of four listings on this box do not carry the symbol at all**, so the unresolved path is the
+common one: it refuses nothing, the name route still fires, and each refusal carries a clause saying only the name route ran — **put on the refusal
+rather than as a standing banner, because at 3-of-4 a banner would be drawn on nearly every gesture**, which this tree forbids in terms.
+⚑ **THE GATE IS WRITTEN AGAINST THE MECHANISM, NOT THE INSTANCE — tonight's own bar, applied by the agent unprompted:** it puts the cursor at a
+fictional `$FFFFBEEF` and asserts that **both** literals a transcriber would reach for — the note's `$FFFFEE0D` and the listing's current
+`$FFFFF00D` — now **pass**. A gate keyed on either would have been testing a coincidence. The stale number survives only as
+`tests::NOTED_STALE_LAB_INDEX`, **a witness whose documented job is to be the value the guard must not be keyed on.**
+▶ **Verified firsthand, DEBUG profile:** fmt 0, clippy 0, **91/91 legs both counts, 3049 passed / 0 failed / 10 ignored**; CI on the preceding
+nudge landing `0a591d7` read green to completion, all three jobs. Blind spots the agent stated rather than left: a **rename** would silence the
+address route permanently with every fixture still green (closing it needs a gate reading aeon's tip, which `aeon_dimensions.rs` forbids in terms);
+and `Cursor.raw` being `pub` lets a future caller transcribe at the call site.
+
+### The attribution correction: `docs/lane-log.jsonl` is corrected by appending, never by editing (orig lines 497-502)
+
+⚑ **ATTRIBUTION, CORRECTED AGAINST MY OWN LANE LOG (hub's catch, and its own relay was the source of the error).** My log entry says *"another
+project's tidy-up found a real bug in ours"*. **False.** The chain: **we** transcribed the address from aeon's note → our nudge parcel **measured**
+the disagreement → **we reported it** → aeon swept its own documentation and found **seven**, not the one we named → aeon flagged this one moved
+**+$200, not +$20**, and said to check our end → **we checked and found the live guard.** Aeon's contribution is the middle link and it is real; it
+is not the discovery. **Corrected in `docs/lane-log.jsonl` by APPENDING, never by editing — that file is his changelog and append-only from his
+side, so the wrong sentence stays with the right one after it.**
+
+### `F-DRIFT-GATES-ON-AN-ADDRESS` (merge `e5c5564`): test the tempting wrong repair; the fixture was the accomplice (orig lines 525-560)
+
+**`F-DRIFT-GATES-ON-AN-ADDRESS` LANDED 2026-09-19, merge `e5c5564`** (agent tip `41ebfe7`, three commits; player only). **`Channel::drift` is
+RETIRED and the two dead channels select again.** Access resolves; nothing consults `noted_addr` to decide where to read or write. ⚑ **The witness
+survived, which was the half most at risk** — it now carries three facts, not two: the note's address, the listing's, **and what the note's old
+address IS NOW**. Measured, and I verified the first at this seat: **`$FFFF8BD6` is `Region_Cur_X0`**, `$FFFFE91A` is `$68` into
+`Canopy_Snap_RowFrame`. **So the old refusal was blocking a healthy build while naming an address that had become another cell — the lab-index
+defect with the sign flipped**, which is the ruling's own claim turning out measurable rather than aesthetic.
+▶ **The refusal moved onto two facts re-derived from the loaded listing per gesture**, run in full before the first cell: no other symbol starts
+inside the bytes a cell writes, and an array poisoned whole is exactly that large and partitions by the count the listing publishes
+(`BGANIM_MAX_BANDS`). **Measured silent on the real listing**: 8/8 cells pass, `BgAnim_LastStep` pins at exactly 8 bytes, `BGANIM_MAX_BANDS = 4`
+divides it into 2-byte slots. A new `label_at` uses the address direction's own `disp` (`queried − disp`), so **no contract change**, and it is
+alias-safe by comparing starts rather than names (`Raster_Program`/`Raster_State` and `BgAnim_LastStep`/`Palette_State_End` share addresses).
+⚑ **PER-CHANNEL HONESTY INSTEAD OF A UNIFORM CLAIM, and this is the part a lesser parcel would have faked:** parallax and raster carry **no**
+transcribed offsets, so their gate can only check width — **and the readout says that in those words** rather than implying offsets were verified.
+Bands carries the module's one transcribed layout fact (`BgAnim_LastStep+4`) and gets both gates; its record decode (`BAND_RECORD_BYTES = 44`)
+stays transcribed because **the listing publishes no equate for it** — the nine `band_entry_*` rows belong to the *parallax* band record, a
+different struct — so that is a **stated conditional caveat**, not a silent pass.
+⚑ **THE FIXTURE WAS THE ACCOMPLICE, AND REPAIRING IT CONVERTED THREE PRE-EXISTING ROWS INTO WITNESSES.** `Fake::full` carried the note's numbers
+too, under a doc claiming they were what the listings actually carry; with it repaired (plus four neighbour symbols giving the fixture a layout),
+**three rows that had been green over the shipped defect now catch it**. That is the night's third *fixture asserts the stale fact and passes
+honestly* instance, and the repair is what turned it into coverage.
+⚑ **AND THE SENTENCE THE WHOLE REFUSAL RESTED ON WAS FALSE.** `SCRATCH_NOTED_ADDR`'s doc read *"`Parallax_Current_Config` is engine RAM at a fixed
+offset and is a different case, which is why it is still drift-checked."* **False on its own terms** — RAM at a fixed offset inside its own block
+still moves when a block above it changes size, which is exactly what aeon `61918621` did. Corrected in place rather than deleted, **because a
+reader who finds only its absence learns nothing.**
+▶ **VERIFIED FIRSTHAND, DEBUG PROFILE:** fmt 0, clippy 0, **91/91 legs both counts, 3055 passed / 0 failed / 10 ignored**; currency 2/3/9/5 with no
+golden or fixture in the diff. **Red-first reproduced INDEPENDENTLY against the parcel's strongest claim — the TEMPTING WRONG REPAIR**: I bumped
+both `noted_addr` constants to today's listing (`$FFFF8BF6`, `$FFFFE93A`), shown on disk before the run and restored from committed `e5c5564`:
+**56 passed / 1 failed**, guard `the_channels_whose_note_is_stale_still_select_and_still_read`. **So the gate rejects re-transcription, not merely
+the original staleness** — the anti-instance property, verified rather than taken. ⚑ **Ops, against this seat: my first cut of that mutation put a
+`//` comment before the trailing comma and would have been a COMPILE ERROR — not a red.** Caught by reading the diff before running it, which is
+the whole reason that rule exists.
+**The gate's blind spots, stated by the parcel rather than discovered later:** an array that grew while its neighbour did not (trailing pad absorbs
+it) reads as healthy — the extent probe only bounds above; an array that is the **last** symbol in the listing would read as grown and be refused
+(unreachable in this listing family, and the refusal **names that shape itself** so a reader can discharge it in one look); a `synthetic`
+alignment label starting inside a cell would refuse a healthy build (not present here; the refusal names the offending symbol); and **two fields
+swapping inside one symbol's extent passes every check.**
+
+### `F-FIRST-PRESENT-REFUSAL` server half (merge `c590c7d`): a dismissed flake is a filed defect with its disposition guessed (orig lines 566-605)
+
+**`F-FIRST-PRESENT-REFUSAL` SERVER HALF LANDED 2026-09-19, merge `c590c7d`** (agent tip `661174b`, five commits). **Both embedders defer
+iteration 1's drain past its publishes**, so no drain answers a request with no publish behind it and `noDisplay` means what it says; later
+iterations are unchanged. ⚑ **The obvious fix was impossible and the parcel says why: in iteration 1 there is nothing on the glass, so publishing
+early trades a false *no window* for a false *picture*.**
+⚑ **IT WAS A LIVE CI FAILURE AND WE HAD BEEN CALLING IT A FLAKE — the biggest thing measured tonight.** The player gate's red is **byte-identical
+to CI run `34752339602` on `453aa96` (2026-09-13, a real failure)**, which I pulled and read rather than taking the resemblance:
+`loop_tests::a_client_reads_this_windows_top_bar_and_it_follows_the_run_state` panicking on `{"frame":1,"mclk":896042,"reason":"noDisplay"}` —
+**the same mclk.** ▶ **THE CROSS-REGISTER DEFECT (hub banked it at empyrean `2258736f`): a flake dismissed on 09-13 and a contract question filed
+in a doc were ONE defect, and nothing connected them because one lived in a test run and the other in prose.** A red is triaged by whoever is
+landing that week; a contract question is read by whoever drafts; **there is no artifact where both appear, so one defect gets two half-lives and
+two dispositions.** ⚑ It also retires the hub premise's *"No incident. Nobody has reported a wrong answer from this."* — **there was one, six days
+old, in our own CI, misfiled as nondeterminism. The absence of a report was evidence about our TRIAGE**, which is the same correction this lane
+made hours earlier about our corpus, arriving from the other side. **Two independent reasons that sentence was worthless, in one night.**
+▶ **THE RULE, and it is searchable rather than cautionary: a dismissed flake is a filed defect with its disposition guessed. Before citing "no
+incident" in any premise, search the reds closed without a cause.**
+▶ **I RAN THAT SWEEP IMMEDIATELY, AND ITS RESULT IS PARTLY UNMEASURED — stated as such.** Ten CI failures in recent history. **One is the confirmed
+instance** (`453aa96`). **Nine others carry NO `noDisplay` signature — and the instrument was proven first**: a positive control against the known
+run returns exactly 1 hit, so the zeros are real. **But I could not determine the CAUSE of those nine** (`c03ebea` is exit 101 with no test name
+recoverable from `--log-failed`), so the honest statement is **nine reds with no recorded cause, not nine reds that are fine.** Booked
+`F-REDS-WITHOUT-A-CAUSE`. ⚑ **My first pass at that sweep reported "log expired or not a test" for all eight and I nearly banked it — the logs
+were retrievable and my extraction was broken.** An absence produced by my own regex, which is the night's own bar landing on the instrument I
+built to apply it.
+▶ **VERIFIED FIRSTHAND, DEBUG PROFILE:** fmt 0, clippy 0, **91/91 legs both counts, 3058 passed / 0 failed / 10 ignored** (baseline 3055; +3 is
+exactly the three new rows); currency 2/3/9/5. ⚑ **The parcel corrected itself twice, and the first is the more useful: it originally deferred to
+the TOP OF ITERATION 2, reasoning that would land after the blit, and MEASURED IT WRONG-SIDE-UP** — egui re-runs the closure on a discard, so the
+next `iterate` may be another pass of the *same* displayed frame; the position bought no guarantee and only delayed the answer. Moved to the bottom
+of iteration 1. **Second: it had written that nothing can arm a pre-loop breakpoint — false, `--bench-arm` issues 16 `breakpoint_add`s before the
+loop.** They ship disabled so none can fire and the conclusion survives, but the claim did not.
+▶ **A BOUND THAT IS NOW CONTRACT-RELEVANT: neither embedder can promise *a frame that was PRESENTED*, only *a frame it finished COMPOSING*** —
+egui's multi-pass discard is why, and **the proposed clause is worded to that limit rather than past it.** The stronger promise is separate and
+larger work in both windows.
+▶ **CONTRACT TEXT DRAFTED, NOT LANDED** (`docs/2026-09-19-first-present-order.md`, marked A PROPOSAL in its first line; `contract/` is the hub's and
+was not touched). **Accepted verbatim by the hub at empyrean `2258736f`**, application as its own draft-and-apply pass per D-30:
+> A windowed embedder MUST NOT pump the bus before it has published the window state its readbacks report, and MUST NOT publish a snapshot of a
+> frame it has not composed.
+⚑ **The second half is the anti-loophole and the hub kept it for the parcel's own reason: without it the cheap way to comply is to prime an empty
+publish.** And *windowed embedder* is defined **by which readbacks a host serves**, so **a third embedder inherits the obligation by serving them
+rather than by knowing about it.**
+**Measured vs reasoned, stated: the player is measured end to end through the real `Loop::iterate`; the frontend is measured AT THE MECHANISM** —
+real `drain::Order`, real `Bus`, real socket, real snapshot, in `fn main`'s written order — **but not at `fn main`**, which needs a real window.
+
+### `F-REDS-WITHOUT-A-CAUSE` (merge `a57387d`): a query's silence is not evidence until the query has been shown to fire; the flags are the claim (orig lines 608-640)
+
+**`F-REDS-WITHOUT-A-CAUSE` ANSWERED 2026-09-19, merge `a57387d`** (agent tip `81c9e53`; docs only, nothing fixed — the row was an
+investigation). ⚑ **UNDETERMINED = 0 of 8, and NOT because they were clean: all eight were REAL DEFECTS, all already fixed, and the eight runs
+are FOUR EVENTS.** RULE 2 was never reached — none resisted a first look.
+* **A — floor clippy** (`549f020` + `c03ebea`): `nonminimal_bool` at `vdp.rs:986`, **deterministic, never a flake**, fixed by `0647d6f`, the very
+  next commit on main.
+* **B — `F-MACHINEREPLACED-EVENT-RACE`** (`c86e1c3` + `ea1dcb8`): fixed `c6ed909`, with a mechanism (registration lags the synchronous emit;
+  nothing is dropped, which is why `droppedEvents` was 0), verified against the tree rather than the commit message.
+* **C — M13 inode reuse, a TRIPLE** (`adcf239` + `85c1599` + `82e812a`) — **my clustering note stopped one short.** The agent built `82e812a` and
+  ran it rather than trusting the fix's claim: **red 3/3 on an ext4 `TMPDIR`, green 3/3 on tmpfs**, post-fix main green on ext4. **The local green
+  was the FILESYSTEM, not correctness.**
+* **D — panel masked digit** (`462e9cf`): the same test and the same counts as the already-explained `2e9821b`; fixed `1235148`.
+**INFRA = 0, established rather than assumed:** the Determinism and Replay jobs were green in all eight while only *Build, test, clippy, fmt*
+failed — **a runner or OOM event does not spare two sibling jobs eight times running.** **Hit rate on investigated reds: 6 for 6 by event, 10 for
+10 by run.** The parcel's own sentence, and it is the row's result: **what was missing was never the evidence — it was that a survey said the
+evidence was gone, so nobody looked.**
+⚑ **MY SURVEY WAS WRONG IN THREE WAYS AND THE THIRD IS THE ONE THAT MATTERS.** (a) It listed **seven** rows while saying eight. (b) `test result:`
+counts are **not** suite progress — a run's log concatenates all three jobs, so the 09-16 pair's "three legs" were other jobs and those runs died
+in **clippy**, never reaching Test. (c) **The three runs I reported as having NO LOGS have full logs** — I re-verified at this seat: **1683 / 1675
+/ 1692 lines, all panicking at `server.rs:1339`** — and the cause is that my `gh run list --limit 200` window had been pushed past them **by the
+night's own commits.** ⚑ **That is the THIRD false absence my own ad-hoc tooling produced tonight** (the CI waiter's window, the sweep's regex,
+this survey's window), **every one after I had banked the rule against it.** Banked in the reference with the corrective: **a query's silence is
+not evidence until the query has been shown to fire — run a positive control in the same invocation.** ⚑ **And the diagnosis that generalises: I
+applied "an absence is never a finding" scrupulously to every parcel's evidence and never once to my own instruments** — author-versus-carrier in
+a new costume, the discipline running on the thing being judged and never on the thing doing the judging.
+▶ **TWO METHOD ROWS BOOKED BY THE PARCEL, both against this seat:** `F-CI-SURVEY-UNVERIFIED` (a survey reported absent evidence that was present,
+twice) and **`F-RED-NOT-CROSS-CHECKED`** — `462e9cf` was enumerated as unchased **while its fix was already in `lane-log.jsonl`,
+`OVERSEER-LOG.md` and a dated doc, and the fix commit names the CI run outright.** One grep would have caught it; the bar is now *grep the lane's
+own records for a red's SHA before chasing it.*
+⚑ **AND A GREEN IN THIS LANE'S OWN RECORD THAT COULD NOT FAIL:** `lane-log.jsonl` at `2026-09-16T03:26:06Z` records *"clippy exit 0"* on the merged
+tree — **the same day CI failed on a clippy lint.** The invocation lacked **`-D warnings`**. **A verification line naming a tool is not a
+verification; the FLAGS are the claim.**
+▶ **ONE SIZED, UNSTARTED FOLLOW-UP, correctly not opened inside this parcel: `F-REDS-0909-COHORT`** — seven more failures just outside my ten-run
+window, all 2026-09-09, **all logs retrievable** (1318-2116 lines), five exit 101 and two exit 100. **Log-only cost, no builds.**
+
+### `F-REDS-0909-COHORT` (merge `777e4ef`): the exit code is not the event boundary; a heuristic is a claim about a topology (orig lines 644-670)
+
+**`F-REDS-0909-COHORT` ANSWERED 2026-09-19, merge `777e4ef`** (agent tip `1e40477`; docs only, nothing fixed, nothing built at any SHA).
+⚑ **UNDETERMINED = 0 AGAIN. Seven runs are THREE events: two REAL (both already fixed, fix commits verified as ancestors of `HEAD`) and one
+INFRA.** ▶ **Running total across both cohorts: 17 runs, 15 REAL, 2 INFRA, 0 UNDETERMINED, 9 events. Not one red in this repo's recent history
+has resisted a first look.**
+⚑ **THE EXIT CODE IS NOT THE EVENT BOUNDARY, and my clustering hint was numerically exact and wrong.** I gave the agent "five exit 101, two exit
+100". True — **and the five 101s are TWO different defects** (one test failure at 14:06; four lint failures at 18:44-19:03), so splitting on exit
+code would have priced one event inside another. **The largest event in either cohort is that quadruple.**
+▶ **FIRST INFRA IN THE CORPUS, on positive evidence:** `sudo apt-get update` died on a Hash Sum mismatch against `dl.google.com`, exit 100 is
+apt's, and **neither run reached `cargo` at all** — verified at this seat, zero compile lines. Two runs 20 minutes apart got the same wrong hash
+against the same expected one: one upstream mirror state, observed twice.
+⚑ **TWO CORRECTIONS TO THE PREVIOUS COHORT'S METHOD, both made by CHECKING rather than inheriting, and this is the behaviour to keep.**
+(1) **The sibling-green INFRA heuristic does NOT transfer.** `ci.yml:63` puts the `apt-get` step in `Build, test, clippy, fmt` **and nowhere
+else**, so the siblings were never exposed to the failing step and their greenness is uninformative; the INFRA ruling rests on positive evidence
+alone. **A heuristic is a claim about a topology, and the topology is what changes between investigations.** (2) **"A floor lint cannot be run on
+this box" is wrong for this lint** — reproduced locally in **twenty seconds on a two-file scratch crate**. ⚑ **And the tree had already corrected
+this ten days ago: `2999687`, *"correct my own diagnosis: there was no toolchain skew, I skipped clippy."*** A cheap falsification refused twice
+with the correction already committed in between.
+⚑ **RULE 3 (grep our own records first) PAID WITHOUT FINDING ITS TARGET:** none of the seven run ids is banked anywhere — **but the grep surfaced
+`lane-log.jsonl:184`**, a landing that recorded a genuine full-suite green **from a command that cannot fail a clippy gate**. That is the **second**
+such line in our own verification record, and tonight's release-vs-debug red is the third instance of the shape. ⚑ **And `a003801`, which
+introduced that lint, never had a CI run of its own — `main` was red for 34 minutes with nothing able to say so.**
+▶ **THREE METHOD ROWS BOOKED, all against this lane's own practice** and banked as bars: `F-LANDING-GATE-NOT-RUN` (**the lander's check set must
+be the CI job's STEP LIST, not a subset; quote the invocation, not the tool — the flags are the claim**), `F-INFRA-HEURISTIC-UNSCOPED`, and
+`F-FLOOR-LINT-ASSUMED-UNTESTABLE`.
+**Gaps named rather than papered:** the truncate-window race in event A was read statically (one path, three parallel writers, a truncating write)
+and **not** reproduced — that needs an old-SHA build and a loaded many-trial loop; and the previous cohort's `nonminimal_bool` was **not** retested,
+so no claim is made about it.
+
+### `F-LANDING-GATE-NOT-RUN` (merge `2c8befd`): what `land.sh` and `lane-check.py` now enforce, and what they print that they do not (orig lines 674-703)
+
+**`F-LANDING-GATE-NOT-RUN` LANDED 2026-09-19, merge `2c8befd`** (agent tip `e4c3dfb`, five commits; `tools/` only). **Both halves of one defect
+class — a gate believed to check something it does not — and this row is the ROOT CAUSE of the 17 reds, not one beside them: a red after a green
+landing reads as noise because the green looked authoritative while answering a different question.**
+▶ **HALF A: `land.sh` now runs CI's DEBUG arm (D1-D6) by default, and the measurement inverted my brief's assumption.** I warned against making
+landings 40 minutes; **parity costs half again, not double** — debug suite **731 s**, whole debug arm ~790 s, **a full landing 18.5 min warm** — so
+it is a default, not a flag. Two mechanisms: **`tools/ci-parity.py` classifies every `run:` step of every push-triggered workflow** (25 steps,
+keyed by job+name, **pinned by a digest of the step body**, so a step changing under us reds rather than diverging silently) **and proves the
+reverse claim** — each `RUN` row must name text actually present in `land.sh` outside comments. ⚑ **And every GREEN now names the gates it did NOT
+run**, with `debug_legs=skipped/skipped` rather than `0` — loud-on-unmeasurable inside the instrument that judges everything else.
+▶ **HALF B: `lane-check.py` enforces the contract it claimed to.** Exactly-one-`next` (with the no-`doing` exception), `open`+blocker,
+`blocked`-with-no-blocker, all four size bounds, unknown keys. **Read from empyrean `819f59b6`, blob `a20be8cb`, and both are PRINTED on every
+landing**, so the log names the contract it enforced — the copy problem handled by making the copy cite its source. `--gaps` lists the **seven
+rules deliberately not enforced.**
+▶ **VERIFIED FIRSTHAND ON THE MERGED TREE BY THE NEW GATE ITSELF: 27 gates PASS, 0 FAIL, `legs=91/91` AND `debug_legs=91/91`, `gates=full`,
+`debug_arm=D1-D6 ran`** — plus **two declared `ci_gap=` rows** (the cache-miss corpora fetch, ABSENT; the aeon-pin naming, DIFFERS, nearest local
+gate G6b). **A green that names its own remaining gaps is the deliverable I cared most about.** ⚑ **And I tested half B against my OWN dated
+defects rather than the agent's fixtures**: `8d58a76` (focus 126), `558de41` (five `open`+blocker), `48e8e12` (the two-`next` state I shipped an
+hour earlier) — all three now refused, each with a message saying *why it costs*; **and the control was RUN, not asserted: the old validator prints
+`clean`, exit 0, on all of them.**
+⚑ **THREE CORRECTIONS AGAINST ME, and the second is the one to relay:** (1) **future `updatedAt` was already enforced** — one of my four items
+needed no work. (2) ⚑ **`lane-check` was STRICTER than the contract**: it REQUIRED `awaiting` and `atBoundary`, which `LANE_STATUS.md` marks
+optional in as many words, so **the gate had been red on 16 of this lane's own 255 status revisions for obeying the contract.** ⚑ **That direction
+is invisible from the console** — a console sees a card go dark when a status is malformed; **it cannot see a lane quietly failing its own gate for
+being right.** Hub swept all four lanes with a validator (empyrean `5cef4ed1`, with a positive control because the first pass returned zeros it did
+not trust): **oracle's was the only one**; aurora's is correct, aeon's and sigil's do not touch those fields. (3) **The new debug gate caught a
+defect in the commit that ADDED it** — a timing figure written where a compiler version is parsed, which **the release arm structurally could not
+have caught, because the debug gate runs first.** ⚑ **A gate that catches its own author on its first run is the strongest evidence it is live.**
+⚑ **And five self-corrections in the agent's own work, one of which is this night's theme exactly: its corpus harness PRINTED "the control passed
+all 255" when the measured answer was RED on 37** — 16 of those being the contract-optionality divergence above. **A printed claim that was never
+the measured one, inside the parcel fixing printed claims that were never measured.**
+
+### `F-METHOD-ROWS-FROM-THE-REDS` (merge `108dfcf`): the `detectors` block, and what it deliberately leaves legal (orig lines 707-733)
+
+**`F-METHOD-ROWS-FROM-THE-REDS` LANDED 2026-09-19, merge `108dfcf`** (agent tip `79d88ae`; `docs/` + `tools/`). **Three habits become three
+MISSING FIELDS.** One artifact, not three: a fenced ```` ```detectors ```` block in an investigation doc carrying `ABSENCE:` / `HEURISTIC:` /
+`CANNOT-TEST:` declarations, validated by **`tools/detector-check.py` at `land.sh` G2c on every landing** (~0.4 s over 224 docs).
+⚑ **THE DESIGN CATCH IS SHARPER THAN MY BRIEF: a positive/negative control pair catches only TWO of the three false absences I produced.**
+Instance (1) — the `--limit 8` CI waiter — was a **WINDOW** failure: a control on a case inside the window fires happily and the zero is still
+wrong. So `ABSENCE:` carries **five** fields, and the last two are the ones that were missing — `scope:` (what the instrument enumerated, **with
+its boundary**) and `contains:` (how the subject is shown to lie inside it). A red case pins exactly that: a perfect control pair with the window
+deleted, which every other check passes.
+▶ **The strongest check is that `HEURISTIC:`'s `checked:` citation is RESOLVED, not parsed** — `<rev>:<path>:<line> "<text>"`, the blob read at
+that revision and the quoted text required on that line. Moving the line number or one digit of the SHA reds it.
+⚑ **DELIBERATELY LEGAL, and this is the honest half: `attempted: none`, `cost: not measured`, `prior: not-searched` PASS and print as NOTES.**
+Cohort 1's block is **green with three of them** — *an impossibility claim with no attempt behind it*, *a price asserted rather than measured*,
+*this lane's own record never grepped* — **and those three notes are precisely the holes the next night paid for.** A reader sees `none` in a
+field instead of reading a paragraph and assuming there was a reason.
+▶ **HONEST ABOUT ITS OWN LIMITS, printed by `--gaps` on every landing rather than left to be discovered:** the trigger is **self-selecting**
+(delete the `**Kind:** investigation` line and the gate holds nothing), counts are never re-run, `assumes`/`cost` are never judged, and **there is
+no control arm** — because there is no previous gate to run on the same bytes, which the agent stated instead of faking one.
+▶ **VERIFIED FIRSTHAND:** the new gate ran on the merged tree — **28 gates PASS, 0 FAIL**, `legs=91/91`, `debug_legs=91/91`, `gates=full`, two
+declared `ci_gap=` rows, and **`PASS G2c detector-check: clean — 224 doc(s), 6 declaration(s), 4 note(s)`** on the real landing path. **My own
+red-first, aimed at the check my `--limit 8` defect needed:** deleted the `scope:` line from the 0909 cohort's declaration — shown on disk by
+`git diff --numstat` first — and the tool names the missing field and **exits 1**, restored **exit 0**. ⚑ **Exit code captured OUTSIDE a pipe**,
+because a gate that prints a complaint and exits 0 is a log line, which is this night's own lesson aimed at the gate that encodes it.
+⚑ **Ops, the agent's, and it is the same shape a fourth time: its first mutation pass produced FOUR FALSE GREENS** — `sed` errored on the `:` in
+the expressions and the tool printed `clean` over an **unapplied** mutation. Redone with an assertion that the mutation applied. **An unapplied
+mutation and a clean baseline are the same artifact**, in the parcel whose subject is exactly that.
+⚑ **And it caught itself once more: its first trigger regex matched `**Kind:** investigation` anywhere and immediately fired on
+`OVERSEER-REFERENCE.md`, which mentions the marker while documenting the trigger.** Anchored to column 0; the comment records it.
+
+### The CI-green overclaim: a summary sentence written from the feeling of the work rather than from a loop over it (orig lines 738-751)
+
+⚑ **AND THE SENTENCE THAT STOOD HERE FOR ONE COMMIT WAS AN OVERCLAIM, CAUGHT BY AUDITING MY OWN CLAIM RATHER THAN BY ANYONE ELSE.** It read
+*"Every landing of this session is now CI-green and read."* **False as written**, and the audit is one loop over the fourteen merges:
+* **Nine have their own run: eight `success` and ONE `failure`** — `462e9cf`, the panel-clip landing, **superseded by the fix at `1235148`
+  which is green.** *"Every landing green"* erases a red that actually happened and that this lane spent an hour on.
+* **Five have NO run of their own**, because they were pushed together with a docs commit and GitHub runs the tip. **Measured rather than
+  assumed**: `0742cec`→`f729d7b`, `d145636`→`0f4be73`, `a57387d`→`10f78e9`, `777e4ef`→`04b37cd` are all **0 lines of `crates/` diff** to a green
+  run — byte-identical, so the substitution is exact. **`e5c5564`→`45f4d7e` is NOT byte-identical: 2 lines**, and I read them rather than
+  rounding — both are **doc-comment prose** in `aeon_dimensions.rs` (my own `Channel::drift` retirement sync), so **no executable line differs**,
+  which is a weaker and true claim instead of a stronger and false one.
+▶ **The accurate sentence: every landing's CODE has been tested green — one landing was red and is superseded, five were tested through their
+pushed tip, four of those byte-identical and one differing only in comments.** ⚑ **I wrote the overclaim in the same session in which I banked
+`land.sh` green is not a CI prediction, a green recorded from a command that could not fail, and three false absences from my own tooling.
+The register where it happened is the one this night keeps naming: a summary sentence at the end of a report, written from the feeling of the
+work rather than from a loop over it.**
+
+### `DATA-DISPLAY-AUDIT`'s last buildable item (merge `2414223`): widen the lock, never rename it; a cancelled run is an absence, not a pass (orig lines 753-788)
+
+**`DATA-DISPLAY-AUDIT`'s LAST BUILDABLE ITEM LANDED 2026-09-19, merge `2414223`** (agent tip `3bac5f4`, one commit, `oracle-player` only).
+⚑ **RE-DERIVED BEFORE DISPATCH AND THE ROW WAS WRONG: there was ONE buildable item, not two.** The "slot refresh follow-up" my board and the hub
+both called buildable is **audit item 35, under the heading *"What a frame still has to answer (look calls 34-36, none seen)"***, and its text is
+a question addressed to him. **The hub called it buildable because it was reading my row** — the exact his-versus-not-done-yet confusion the
+cleanup existed to remove, aimed back at me. Board corrected in the same write. ▶ **The audit is 36 look calls, not 33.**
+▶ **The catch-all is closed by CALLING the treatment the other seven sites got, not restating it**: `render` + `NO_VALUE` moved to `table.rs`
+(which already owns the rest of a table cell and holds no `egui` type), and `Row::cell` is now `None => ABSENT` / `Some(v) => table::render(v)`,
+its `None` arm kept because a key the record does not carry is **not** a served `null`. ⚑ The agent's own sentence: **copying `render`'s seven
+arms into `objects.rs` "would have closed the defect and left two spellings of one rule — that is how the first one stopped being true."**
+⚑ **THE LOCK WAS WIDENED, NOT RENAMED, and the control ran in BOTH halves.** `no_served_value_can_put_raw_json_on_the_screen` keeps its name and
+now drives every `Value` variant through a **named roster** of the three renderers that turn a served value into text a person reads
+(`table::render`, `bus::describe_reply`, `objects::Row::cell`), with **`palette.rs`'s ruled `L-15` exemption named in the roster's doc so a later
+reader meets a ruling rather than a gap.** **Half one, at base with the defect live on disk: the lock printed `ok`** — reproduced firsthand, the
+**second** measurement of a name standing while its class was committed. **Half two, after the fix: the same-named same-path lock FAILS.**
+▶ **VERIFIED FIRSTHAND:** `land.sh` **28 gates PASS, 0 FAIL**, `legs=91/91`, `debug_legs=91/91`, `gates=full`, the two known `ci_gap=` rows.
+**My own red-first, independent of the agent's:** restored the catch-all (`git diff --numstat` shown first), and **both pre-existing locks fail** —
+`objects::Row::cell([]) put the JSON character '[' on the screen: "[]"` — restored, 2 passed, tree clean.
+⚑ **TWO GAPS THE PARCEL NAMED RATHER THAN LEFT:** the roster is **not derived**, so a fifth renderer added later is not in it and nothing will
+notice (deriving it needs the static type of every expression reaching a `format!`, which a source scan cannot supply — the precedent checked and
+found not to transfer); and **the name still overclaims in one narrow respect**, since all three entries are pure string functions and nothing
+here proves the string reaches the glass. **Both written into the test itself.**
+▶ **WITH THIS, THE BUILDABLE QUEUE IS EMPTY.** Every remaining row waits on him: `DATA-DISPLAY-AUDIT`'s 36 look calls, `PANEL-CLIP-MARK` behind
+`d-54` (67 held rows), `LIVE-EFFECTS-NUDGE-LOOK`, `M24-PARCEL-4-INT-LEVEL` behind `d-51`, `ROM-DROP-WAYLAND`, `PALETTE-SCOPE`, and the contract
+rows behind hub rulings. **`next` is set to `PANEL-CLIP-MARK` WITH its blocker visible, under `LANE_STATUS.md`'s explicit exception for a lane
+with no `doing` row** — *"what I would take when the hold lifts", the field at its most useful* — **not an invented startable row to fill a
+field.**
+⚑ **CI ON THE FINAL LANDING `2414223` WAS `cancelled`, NOT GREEN — and I caught it in my own closing claim.** The *Build, test, clippy, fmt* job
+started 15:28:05Z and was cancelled 15:47:09Z; the other two jobs passed. **I looked for a cause and did not assert one**: `ci.yml` declares no
+`concurrency` block, so the obvious guess (my later docs pushes superseding it) is **not supported by the config**, and the log gives no reason.
+**Unexplained, and recorded as unexplained.** ⚑ **A cancelled run is an ABSENCE, not a pass** — reporting it as green would have been the night's
+own defect in the night's last sentence.
+▶ **Resolved by measurement, not by substitution-on-trust: `7d56eb6` carries `crates/` BYTE-IDENTICAL to `2414223` (0 lines of diff) and its run
+is `success` on all three jobs, read to completion.** So the landing's code is CI-green; the landing's own *run* is not, and both halves are
+stated. ▶ **Booked `F-CI-RUN-CANCELLED-UNEXPLAINED`** — a cancelled run on a landing SHA with no declared concurrency group and no logged reason;
+it is the second shape of *the run that does not exist to read*, after the multi-commit-push case, and the discriminator is the same: **ask whether
+a verdict EXISTS before reading its colour.**
+
+### `F-CI-RUN-CANCELLED-UNEXPLAINED`, `F-IO-DATA-BIT7` and `F-CI-VERDICT-TOOL` (2026-09-25): CI is read with `tools/ci-verdict.py`; a worktree has no `vendor/` (orig lines 790-794)
+
+**`F-CI-RUN-CANCELLED-UNEXPLAINED` ANSWERED 2026-09-25, merge `0f29d80`** (agent tip `ddf4b1e`; docs only). An **external cancel request**: not a timeout, a lost runner, a concurrency group or a hang. Who sent it is undetermined, because the API does not record it; no process on this box sent it. Verified at this seat: the job's only failure annotation is `The operation was canceled.`, and `timeout-minutes` appears in `ci.yml` only inside a comment. Full record: `docs/2026-09-25-ci-run-cancelled.md`. ⚑ **No committed tool reads a CI verdict at all.** The overseer's hand loop is the only reader, and its `--limit 60 … startswith` form spins forever once 60 runs have landed past the SHA. `gh run list --commit` needs the FULL 40-char SHA; a short SHA returns silence. Booked `F-CI-VERDICT-TOOL`: a `tools/ci-verdict.sh <sha>` that passes only on all-`success` and fails loud when no run exists, plus `timeout-minutes` on the build-and-test job, now that 211 green runs give the number (median Test step 36.2 min, slowest job 56.8 min).
+
+**`F-IO-DATA-BIT7` SETTLED AND FIXED 2026-09-25, merge `5ee7892`** (agent tip `4698b1e`; landed by `land.sh`, 28 gates green, release 91/91 3062/0/7, debug 91/91 3059/0/10, pushed). **Data bit 7 reads back the LATCH**, whatever Control says. We had forced it to 1 when Control bit 7 was clear, which is every normal game. Three sources, two of them carrying a mechanism: the YM6046/315-5309 die netlist (`emu-russia/SEGAChips` `IOChip/IO.v` @ `6ec064e`, flip-flop `g_87` on the Port A Data write strobe), Nuked-MD `iochip.c` @ `9c219b3`, and MacDonald's console measurement. **Verified at this seat:** `gen-hw.txt` line 494 reads *"Bit 7 isn't connected to any pin on the I/O port. It will latch a value written to it"* ($7F → $FF → $7F), and its reset table gives `A10003h = 7F`. My own red-first: I set `from_latch = ctrl`, showed it with `git diff --numstat` 1/1, and both new gates failed on assertions naming MacDonald's sequence. Restored from the commit. No state_hash, replay or frame golden moved. Released pads now read `$7F`/`$33`, and `known_differences.py` has no bit-7 entry left. ▶ **Open, booked by the parcel:** Data flip-flops have NO reset in the netlist, so a future reset-button path must keep the latch; `run_th_pullup.py`'s label strings still predict `$FF`/`$B3`, though its verdict logic is correct. ⚑ **A worktree has no `vendor/`, so the corpus tests pass while testing nothing unless `vendor/` is linked in.** A brief that asks for a crate-level run from a worktree must say so.
+
+**`F-CI-VERDICT-TOOL` LANDED 2026-09-25** (agent tip `1ecf2f8`). `tools/ci-verdict.py <sha>` exit codes: 0 GREEN (every push run and job `success`), 1 RED (names the run and conclusion), 2 PENDING (`--wait`), 3 NO-RUN (only after a same-call positive control fires; names the push tip and its `crates/` diff), 4 UNMEASURABLE. The 32 offline cases in `tools/test_ci_verdict.py` run at `land.sh` G0c. **Verified at this seat on real history:** `2414223` → exit 1 naming `CANCELLED`, `7d56eb6` → exit 0, `ddf4b1e` → exit 3. My own red-first: I turned both `!= "success"` tests into `== "failure"` (`--numstat` 2/2), and 11 cases went red, including the 2414223 case. Restored from the commit and green again. **`timeout-minutes: 120` on build-and-test**, derived from 365 green jobs over the whole API history: median 36.5, p99 49.8, max 66.8. ⚑ **The 09-25 doc's "slowest 56.8" was a two-week window.** The real max is 66.8, and its proposed 90 would have been only 1.35x the slowest green. ▶ `ci-parity.py` fingerprints only `run:` text, so a job-level key (`timeout-minutes`, `if:`, `needs:`) is invisible to G0. That is a known gap, not booked as a row. **From now on CI is read with `tools/ci-verdict.py`, never with a hand loop.**

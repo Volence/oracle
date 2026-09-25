@@ -4036,3 +4036,71 @@ failing test ran and passed. **Red-first FORCED INDEPENDENTLY here** — wall cl
 mutations shown on disk before the run and restored from committed `1235148`: **RED**, `27.78 fps / 324 ms` against `26.39 fps / 341 ms`.
 ⚑ **And that mutation proves more than the fix: those two differ at EQUAL WIDTH, so THE OLD MASKED COMPARISON WOULD HAVE PASSED ON IT.** Dropping
 the mask strictly strengthened the gate rather than merely repairing it.
+
+## Moved from OVERSEER.md 2026-09-25 — closed landings, CI-read notes and superseded `NEXT:` clauses, verbatim
+
+*Nobody boots from this file.* Each block is verbatim from `545b45a:docs/OVERSEER.md`, with its original line range, in the boot file's original order. The landing narratives that carried live bars went to `docs/OVERSEER-REFERENCE.md` under the same date.
+
+### The superseded `NEXT: DATA-DISPLAY-AUDIT` of 2026-09-19 and the `1235148` CI read (orig lines 440-442)
+
+**NEXT: `DATA-DISPLAY-AUDIT`** *(corrected 2026-09-19: `LIVE-EFFECTS-NUDGES` is DISPATCHED, branch `parcel/live-effects-nudges`; CI on the fix was read green, run `1235148`, all three jobs)*. Its premise was re-derived before dispatch and aeon's hook is LANDED in engine source at `origin/master` (`Parallax_InstallScratch`, `Parallax_Scratch_Arm`, `Parallax_Scratch_Config`), so §5.2's *"GENUINELY BLOCKED"* is stale; the live constraint is that the scratch RAM is **debug-only** (`if DEBUG == 1 @shape_divergent` in aeon's `engine/ram.emp`), so the control must refuse honestly on a release build. The previous clause read: It is a declared `LIVE-EFFECTS` project with aeon, so
+**whatever it establishes about WHICH fields have a runtime reader is owed to aeon and aurora in the same turn**, not discovered by them later.
+**CI READ GREEN for the fix at `1235148`** — read to completion with `gh run view`, all three jobs green (*Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*). **Main is green; the red this seat opened is closed.**
+
+### `LIVE-EFFECTS-NUDGES`'s superseded `NEXT:` (orig line 480)
+
+**NEXT: `DATA-DISPLAY-AUDIT`** (items for his eyes plus `objects.rs`'s latent raw-JSON catch-all).
+
+### The `Channel::drift` ruling's superseded `NEXT:` (orig line 523)
+
+**NEXT: `F-DRIFT-GATES-ON-AN-ADDRESS`** — build the ruling above. Then `DATA-DISPLAY-AUDIT`.
+
+### Superseded `NEXT:` after `F-DRIFT-GATES-ON-AN-ADDRESS` (orig line 564)
+
+**NEXT: `DATA-DISPLAY-AUDIT`** (his look calls 1-33 plus `objects.rs`'s latent raw-JSON catch-all).
+
+### Superseded `NEXT:` after `F-FIRST-PRESENT-REFUSAL` (orig line 606)
+
+**NEXT: `DATA-DISPLAY-AUDIT`**, or `F-REDS-WITHOUT-A-CAUSE` if the nine reds are worth a night's attention before it.
+
+### Superseded `NEXT:` after `F-REDS-WITHOUT-A-CAUSE`, and the `c590c7d` CI read (orig lines 641-642)
+
+**NEXT: `F-REDS-0909-COHORT`** (same method, known-cheap, and the hit rate now stands at 6/6 by event), then `DATA-DISPLAY-AUDIT`.
+**CI READ GREEN for `c590c7d`** (the first-present landing), read to completion: `conclusion=success`, all three jobs — *Determinism gate*, *Build, test, clippy, fmt*, *Replay playthroughs (release)*. ⚑ **That job is the one the 09-13 flake failed in, so this is also the first green of the suite with the defect removed.**
+
+### Superseded `NEXT:` after `F-REDS-0909-COHORT` (orig lines 671-672)
+
+**NEXT: `F-LANDING-GATE-NOT-RUN`** — it is the root cause of tonight's own red and of two historical greens, it needs nobody, and it is the one row
+whose fix would have prevented three separate failures in this repo.
+
+### Superseded `NEXT:` after `F-LANDING-GATE-NOT-RUN` (orig lines 704-705)
+
+**NEXT: `F-METHOD-ROWS-FROM-THE-REDS`** (the three habit rows: a survey trusting its own empty result, a heuristic reused unscoped, an
+untestable-here asserted twice), then `DATA-DISPLAY-AUDIT`.
+
+### Superseded `NEXT:` after `F-METHOD-ROWS-FROM-THE-REDS`, and the `2c8befd` / `108dfcf` CI reads (orig lines 734-737)
+
+**NEXT: `DATA-DISPLAY-AUDIT`** — two buildable items (the hidden raw-JSON fallback in `objects.rs`, the slot-refresh follow-up) and look calls
+1-33 that are HIS. **With this landed, the buildable queue is nearly exhausted: what remains is mostly his eyes.**
+**CI READ GREEN for `2c8befd`** (the landing-gate parity change), all three jobs, read to completion — **the first CI green produced by a landing whose local gate ran CI's own debug arm.**
+**CI READ GREEN for `108dfcf`** (the method detectors), all three jobs, read to completion.
+
+### Superseded `NEXT:` of 2026-09-25, after `M24-PARCEL-4-INT-LEVEL`'s kit (orig line 800)
+
+**NEXT:** the queue's owner-free rows are empty again apart from `F-Z80-ACCESSES-UNWATCHED` (needs a contract change + ruling) and `F-BANKED-ADDR-AMBIGUITY` (undemanded CR). Everything else waits on his eyes or ear.
+
+### Superseded `NEXT:` clauses, the `efc6675` CI read, and the `F-BANKED-ADDR-AMBIGUITY` recon + DRAFT CR (merge `d85b281`) (orig lines 804-810)
+
+**NEXT:** as before, the owner-free rows are empty apart from `F-Z80-ACCESSES-UNWATCHED` (contract change + ruling) and `F-BANKED-ADDR-AMBIGUITY` (undemanded CR).
+
+**CI READ GREEN for `efc6675`** (the band-size landing's pushed tip), via `tools/ci-verdict.py --wait`: run `36131135355`, all three jobs `success`. ▶ **NEXT: `F-BANKED-ADDR-AMBIGUITY`**, pushed by the hub (empyrean `f57f22c5`) under the owner's 09-02 standing words. First step is a recon plus a DRAFT CR, docs only. Sources: `docs/2026-09-11-cart-mapper-design.md` §F-BANKED (~l.200) and `docs/2026-09-11-debugread-banked.md` §5 (the typed bank key, the address-free image fingerprint, and the readable SRAM space are all the same seam, so ship them once). The contract edit is the hub's to rule on. Re-derive the premise from the tree before dispatch. ⚑ **`LENS-WAVE-1` is blocked on his eyes, not open:** its remaining two items are look calls, and the row had been miscoded.
+
+**`F-BANKED-ADDR-AMBIGUITY` recon + DRAFT CR LANDED 2026-09-25, merge `d85b281`** (agent tip `42ce90a`; docs only, `docs/2026-09-25-banked-addr-cr.md`). Taken on the hub's push under the owner's 09-02 words (empyrean `aebf7f09` l.34-35, verified an ancestor). Premise **partly true**: since §11.48 the three memory reads carry the bank as a `region` string; every other cart address (pc, watch hits, breakpoints, symbols, profiler rows) is bank-blind, and profiler rows keyed by bare `u32` (`oracle-core/src/profiler.rs:427`, verified here) would merge routines across banks. 27 cart-capable fields over 19 methods + `stopped`, by a schema walk and a code walk that each caught a leaf the other missed. **Recommends a typed `romOffset`** on the reads and "where the CPU is now" fields plus `status.cartBanks` and a normative bank-blind paragraph (wave A); historical records wait for a banked ROM in the suite (wave B). Fingerprint and SRAM space split off. Verified at this seat: the only server reader of the bank table is `engine.rs:10013`; no served typed bank key exists. Agent's one miss: `vendor/` exists in the main tree (absent only in worktrees). `land.sh` GREEN, release 91/91 3067/0/7, debug 91/91 3064/0/10. ▶ **Sent to the hub to rule; the contract edit is theirs.** TAG-B1..B3 (runtime looks on a banked ROM) are foreground-only and gate nothing in wave A.
+
+**NEXT:** `F-BANKED-ADDR-AMBIGUITY` waits on the hub's ruling on the draft. The one other owner-free row is `F-Z80-ACCESSES-UNWATCHED` (also a contract change + ruling).
+
+### The `F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR (merge `94665a6`) and its superseded `NEXT:` (orig lines 814-816)
+
+**`F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR LANDED, merge `94665a6`** (`docs/2026-09-25-z80-watch-cr.md`; docs only). Premise TRUE and worse on the wire: a Z80 YM write is reported as `addr $4000` (a cartridge-ROM address) with `fc 0`, `via "bus"` and a Z80 `pc`, which falsifies §11.51 and three schema descriptions; the landed caveat never reaches the wire (`.caveats()` has 0 callers in `oracle-aether/src`, control 11 in core, verified here). **Real consumer:** aeon `tools/song_load_mid_drum_witness.py` (verified at aeon `origin/master`, last touched `d876177e`) uses a `$4000-$4003` watch as its YM log. **Recommends option C:** YM writes reported at the 68k-side address `$A04000-3`/`$A07F11`, `via:"z80"`, Z80 `pc`, no `fc`, never `stopAfter`; a normative paragraph that no other Z80 access is watched; full stream deferred. Fallback A (describe today's behaviour). ▶ **TAG-Z1: does aeon's tool run again?** If not, option B (drop, prose only) beats C. Booked `F-Z80-WIRE-CAVEAT-ABSENT`. `land.sh` GREEN 92/92 both profiles. **Sent to the hub to rule.**
+
+**NEXT:** both contract rows wait on the hub. No owner-free buildable row remains; everything else waits on his eyes or ear.
