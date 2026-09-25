@@ -913,7 +913,7 @@ impl Watchpoints {
             out.push(format!(
                 "{names}: the Z80 can reach {range}, and of its accesses a watch is offered only its \
                  YM2612/PSG register writes, at their 68000-map addresses $A04000-$A04003 / $A07F11 with \
-                 via z80 (contract §6, §11.52). Its opcode fetches, its reads, its own RAM traffic, its \
+                 via z80. Its opcode fetches, its reads, its own RAM traffic, its \
                  $8000 bank-window accesses and its VDP-mirror accesses are not delivered to watchpoints \
                  (F-Z80-ACCESSES-UNWATCHED), so every such Z80 access to {it} is missing from the counts \
                  here, and zero Z80 hits is the instrument being absent, not a negative finding."
