@@ -389,6 +389,16 @@ impl PanelMark {
         Self { layer, start }
     }
 
+    /// The layer the body draws into.
+    pub fn layer(&self) -> egui::LayerId {
+        self.layer
+    }
+
+    /// The paint-list index the body's first shape took.
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
     /// Close the span: the body painted everything between `start` and the list's next index now.
     pub fn leave(self, ui: &egui::Ui, name: &'static str) -> PanelSpan {
         let end = ui

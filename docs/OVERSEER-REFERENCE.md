@@ -2712,6 +2712,33 @@ own treatment**: a DOUBLE hover (egui's `Label` already hovers when elided; `tab
 so the gate also refuses a run drawn as nothing but the mark. **NEXT: weigh `F-BANKED-ADDR-AMBIGUITY` (undemanded CR) against `LIVE-EFFECTS-NUDGES`
 and `F-Z80-ACCESSES-UNWATCHED`; d-54 and aurora's CR-W review are owed but gate nothing.**
 
+**APPENDED 2026-09-25: the box half, built on branch `parcel/panel-clip-mark-box` after the hub ruled `d-54` `mark-only`** (a cut line must
+say it was cut and show the full text on hover; nothing wraps; no pane width or dock-layout change). *Not yet landed when this was written; the
+overseer lands it.* **The true count it started from: 67 unmarked rows = 60 whose layout box lies past the pane (the tree's ceiling constant) + 7
+rows of 5 natural-width control captions** (`CONTROLS_LEFT_FOR_THE_OWNER`); "67" in this entry was the total, "60" the box half. **What landed:**
+`crates/oracle-player/src/cut_mark.rs`. After each panel body paints, it goes over the same paint-list slice the CR-W harvest reads, and each glyph row
+cut at the pane's right edge is **re-laid out by the toolkit** (the row's own characters in their own formats, the visible width, one row, `…` as
+the overflow). The re-laid row replaces the cut row **in the painted galley only**. No allocation changes, so nothing wraps, no column moves,
+and the `Grid` ratchet cannot recur. The galley's job is kept, so `screen_text`'s `text` is untouched. **Measured over the same 28
+arrangements, both arms in one gate:** control (pass off) 67 unmarked, 60 of them box cuts; treatment **1 unmarked, 0 box cuts, rows announced 36
+→ 102, 17 of 188 served panel surfaces changed `rendered` and NONE changed `text`** (asserted byte-identical per arrangement and panel). Ceiling
+60 → **0** (now an emptiness assertion); controls list 5 → **1**. Hover: a galley the toolkit had already elided keeps the `Label`'s own
+hover, and one the pass is the first to cut gets a `Sense::hover` region carrying the whole text. The new row
+`the_whole_of_a_line_the_pane_cut_is_on_its_hover` measured 9 lines, each hovered once: 8 of the first kind, 1 of the second, 2 wrapped.
+**What remains, and why each is outside mark-only:** (1) `◀`, a **one-glyph** caption cut by about 3 points at every-tab @2. The toolkit's
+elision keeps at least one glyph, so its only possible mark would replace the whole caption, which is the collapse `blanked` refuses. (2) **3 runs
+the pane ate WHOLE sideways, with no glyph on the glass to carry a mark**: Memory's `go` in every-tab, and state buttons `8` and `9` in a narrow
+Screen pane. These are exactly the two look calls the hub folded into `d-54` on 09-19. The sweep now prints them (`WHOLLY-PAST`) but does not
+assert them, because they are layout. (3) Not treated by design: a cut at a clip short of the pane's edge (a `TextEdit`'s own frame), so an
+input field never grows a `…`. ⚑ **The rule did not move; the glass did.** Two fixtures encoded the old glass and went red, and both were
+restated rather than weakened. W6's straddle is now a visible prefix *plus* the mark: its old assertion holds verbatim on the control arm, and the
+new glass is pinned on the treatment arm. W5's sweep now requires a multi-row elided run to *contain* the mark rather than end in it, since a
+paragraph's uncut last row follows its marked rows. §11.50 still reads true: `rendered` is the glyphs on the glass, and the schema already says
+it is "not necessarily a prefix". ⚑ The CR-W vectors file's case 1 narrates the `aether` row as "clipped, no mark". That was a capture at
+`95bf549`, historical since `67d9bc4`, and it validates against the schema, not the live window. It is not re-captured here. **NEEDS-OWNER-EYES:**
+narrow panes (a fifth-width pane beside Screen) of Objects, Memory, Pacing, Watchpoints, Spawn, Breakpoints; `every-tab` at 1.25 and 2 points
+per pixel. Look at the `…` at the right edge of table cells, hex rows and wrapped paragraphs, and at hovering them.
+
 ### A control arm written down and never executed is not a control arm; the control belongs at the point of use; a compile error is not a red (orig lines 532-549)
 
 ⚑ **THE AGENT CORRECTED THIS SEAT'S BRIEF AND WAS RIGHT: "render a frame both ways and REQUIRE THEM TO AGREE" IS UNEXECUTABLE AS
