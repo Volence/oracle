@@ -2487,13 +2487,6 @@ mod tests {
     /// such caption the sweep finds. Listed so a NEW unmarked cut cannot hide beside it.
     const CONTROLS_LEFT_FOR_THE_OWNER: [&str; 1] = ["\u{25c0}"];
 
-    /// The unmarked cut rows whose layout BOX the pane cannot show (a body whose content is wider than its
-    /// pane, scrolled horizontally). A **ceiling**, not a pin, and it may only come down: 60 when the first
-    /// parcel booked it (2026-09-17), 0 since [`crate::cut_mark`] marks the painted row (2026-09-25). At zero
-    /// it is an assertion that there are none; the control arm below is what shows the sweep can still see
-    /// them when they exist.
-    const BOX_CUTS_BOOKED_FOR_THE_OWNER: usize = 0;
-
     /// What one arm of the cut sweep saw, over every arrangement in [`cut_arrangements`].
     #[derive(Default)]
     struct CutArm {
@@ -2618,7 +2611,7 @@ mod tests {
                 let o = origin + row.pos.to_vec2();
                 row.glyphs
                     .iter()
-                    .filter(|g| {
+                    .rfind(|g| {
                         let r = g.logical_rect().translate(o);
                         r.min.x < p.clip.max.x
                             && r.max.x > p.clip.min.x
@@ -2626,7 +2619,6 @@ mod tests {
                             && r.max.y > p.clip.min.y
                             && !g.chr.is_whitespace()
                     })
-                    .last()
                     .is_some_and(|g| g.chr == '\u{2026}')
             })
             .count()
@@ -2652,7 +2644,7 @@ mod tests {
     ///
     /// **One exit, named rather than counted away:** a caption of one glyph, in
     /// [`CONTROLS_LEFT_FOR_THE_OWNER`]. The box-overflow class the first parcel booked under a ceiling of
-    /// 60 is now marked by [`crate::cut_mark`], and the ceiling is 0.
+    /// 60 is now marked by [`crate::cut_mark`], and the ceiling is 0 (asserted empty).
     ///
     /// **Two arms, because the claim is an absence.** [`crate::cut_mark`] repairs a cut row by making it
     /// FIT (its glyphs now end in the mark before the clip), so on the treatment arm the rows it marked are
@@ -2813,10 +2805,13 @@ mod tests {
              available that would have marked it: {inside:?}"
         );
         assert!(
-            box_cuts.len() <= BOX_CUTS_BOOKED_FOR_THE_OWNER,
-            "{} runs are cut with no mark because their container is wider than their pane; \
-             {BOX_CUTS_BOOKED_FOR_THE_OWNER} are allowed. `cut_mark` exists to mark exactly these, so \
-             find why it did not: {box_cuts:?}",
+            // The ceiling the first parcel booked for the owner (`BOX_CUTS_BOOKED_FOR_THE_OWNER`: 60 on
+            // 2026-09-17) came down to ZERO when `cut_mark` began marking the painted row (2026-09-25); a
+            // ceiling of zero is this assertion, and the control arm above is what shows the sweep would
+            // still see such a cut.
+            box_cuts.is_empty(),
+            "{} runs are cut with no mark because their container is wider than their pane, and none are \
+             allowed. `cut_mark` exists to mark exactly these, so find why it did not: {box_cuts:?}",
             box_cuts.len()
         );
 
@@ -2825,11 +2820,11 @@ mod tests {
             *by_panel.entry(panel.as_str()).or_default() += 1;
         }
         println!(
-            "CUTS: {} arrangements, {} runs ({} elided by the toolkit, {} once marked). CONTROL (marking off): {} rows cut, \
-             {} marked, {} unmarked ({} of them box cuts), {} rows announced. TREATMENT: {} rows cut, {} \
-             marked, {} unmarked = {natural_rows} rows of {} one-glyph captions + {} box cuts (ceiling \
-             {BOX_CUTS_BOOKED_FOR_THE_OWNER}), {} rows announced; {rendered_changed} of {} served panel \
-             surfaces changed `rendered`, none changed `text`",
+            "CUTS: {} arrangements, {} runs ({} elided by the toolkit, {} once marked). CONTROL \
+             (marking off): {} rows cut, {} marked, {} unmarked ({} of them box cuts), {} rows \
+             announced. TREATMENT: {} rows cut, {} marked, {} unmarked = {natural_rows} rows of {} \
+             one-glyph captions + {} box cuts (ceiling 0), {} rows announced; {rendered_changed} of {} \
+             served panel surfaces changed `rendered`, none changed `text`",
             on.arrangements,
             on.runs,
             off.elided,

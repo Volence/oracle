@@ -105,6 +105,9 @@ pub fn with_marking_off<R>(f: impl FnOnce() -> R) -> R {
 /// Where a shape lives in the paint list: its index, and the path through any nested `Shape::Vec`.
 type Path = (usize, Vec<usize>);
 
+/// A shape's replacement galley, and the hover (visible rect, whole text) it earns, if any.
+type Marked = (Path, Arc<egui::Galley>, Option<(egui::Rect, String)>);
+
 /// One text shape that needs marking, read out under the graphics lock and treated outside it (laying out
 /// text needs the fonts, which take the same context lock).
 struct Cut {
@@ -139,7 +142,7 @@ pub fn mark_cut_rows(ui: &mut egui::Ui, layer: egui::LayerId, start: usize, end:
     if cuts.is_empty() {
         return;
     }
-    let mut marked: Vec<(Path, Arc<egui::Galley>, Option<(egui::Rect, String)>)> = Vec::new();
+    let mut marked: Vec<Marked> = Vec::new();
     for cut in cuts {
         let Some(galley) = remark(ui, &cut) else {
             continue;
