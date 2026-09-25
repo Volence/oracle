@@ -1,6 +1,12 @@
 {
-  "focus": "Fresh session, booted. Proposing the bank-switching address question next; waiting on your go.",
-  "inFlight": [],
+  "focus": "Looking into how addresses should name bytes on bank-switching games; drafting a proposal for the hub.",
+  "inFlight": [
+    {
+      "what": "Research and draft contract proposal for bank-switched addresses (docs only)",
+      "where": "branch parcel/banked-addr-recon",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here. Nothing is running. First step once you say go is a read-only look plus a draft contract change.",
+  "nextBoundary": "When the draft comes back, I review it and send it to the hub for a ruling. Nothing lands in the code.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -36,7 +42,7 @@
     },
     {
       "id": "F-Z80-ACCESSES-UNWATCHED",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -52,7 +58,7 @@
     },
     {
       "id": "F-BANKED-ADDR-AMBIGUITY",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
       "project": "ORACLE-DEFAULT",
@@ -83,7 +89,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your go on the bank-switching address question (a read-only look and a draft proposal, nothing lands)",
-  "atBoundary": true,
-  "updatedAt": "2026-09-25T13:11:53Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-25T13:15:57Z"
 }
