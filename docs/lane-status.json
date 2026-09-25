@@ -1,6 +1,12 @@
 {
-  "focus": "Booted fresh. Nothing running; overnight work is landed and pushed. Your sound kit is ready to listen to.",
-  "inFlight": [],
+  "focus": "Small follow-up for aeon's new band-size number: the effects panel reads it directly. Your listens and looks stay yours.",
+  "inFlight": [
+    {
+      "what": "The effects panel reads aeon's published band size instead of working it out",
+      "where": "branch parcel/parallax-stride-equate",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,7 +14,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here: nothing running, everything landed and pushed. The sound change stays on its side branch until you listen.",
+  "nextBoundary": "When the band-size parcel is reviewed and landed.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -52,7 +58,7 @@
     },
     {
       "id": "PARALLAX-STRIDE-EQUATE",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "project": "LIVE-EFFECTS",
@@ -91,7 +97,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your pick: the sound kit (d-51), a look at the '...' marks, or the sound-chip watch fix. Nothing is running.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-25T10:53:55Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-25T11:16:04Z"
 }
