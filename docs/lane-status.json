@@ -1,5 +1,5 @@
 {
-  "focus": "Freshly booted. Everything I can do alone is landed; the rest waits on your ear (d-51) and your eyes (the look rows).",
+  "focus": "Rebooted; nothing changed overnight. All I can do alone is done; the rest waits on your ear (d-51) or eyes.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -69,5 +69,5 @@
   ],
   "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row, or a new ask for this lane",
   "atBoundary": true,
-  "updatedAt": "2026-09-25T21:02:58Z"
+  "updatedAt": "2026-09-26T06:51:34Z"
 }
