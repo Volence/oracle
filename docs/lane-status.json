@@ -1,5 +1,5 @@
 {
-  "focus": "Rebooted; nothing changed overnight. All I can do alone is done; the rest waits on your ear (d-51) or eyes.",
+  "focus": "Rebooted; nothing new for this lane today. What's left waits on your ear (d-51) or your eyes.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -69,5 +69,5 @@
   ],
   "awaiting": "your ear on d-51 (kit at ~/sonic_hacks/listen/d51/) or your eyes on a look row, or a new ask for this lane",
   "atBoundary": true,
-  "updatedAt": "2026-09-26T06:51:34Z"
+  "updatedAt": "2026-09-26T22:04:26Z"
 }
