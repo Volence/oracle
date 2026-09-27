@@ -1,5 +1,5 @@
 {
-  "focus": "Booted again (session 51). Two small bug fixes are ready to check and land on your go. Nothing running.",
+  "focus": "Booted again (session 52). Two small bug fixes are ready to check and land on your go. Nothing running.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -83,5 +83,5 @@
   ],
   "awaiting": "your go (or the hub's option 1) to check and land the two small bug fixes",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T21:17:01Z"
+  "updatedAt": "2026-09-27T22:16:51Z"
 }
