@@ -1,5 +1,5 @@
 {
-  "focus": "Just booted. Two small bug fixes were left half-way when the last session ended; waiting for your go to finish them.",
+  "focus": "Booted again. Two small bug fixes wait: one finished and needs checking, one half-written. Waiting for your go.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -83,5 +83,5 @@
   ],
   "awaiting": "your go to finish the two small bug fixes the last session left half-way",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T09:17:00Z"
+  "updatedAt": "2026-09-27T10:16:52Z"
 }
