@@ -1,6 +1,17 @@
 {
-  "focus": "Answered the three suite items held for us; found three small oracle bugs and booked them.",
-  "inFlight": [],
+  "focus": "Fixing two small oracle bugs found this morning: a lost-reply bug and wrong names at $8000.",
+  "inFlight": [
+    {
+      "what": "Fix: a flood of events can throw away a queued reply",
+      "where": "branch parcel/event-evicts-response",
+      "agent": true
+    },
+    {
+      "what": "Fix: sound-processor labels naming main-processor code at $8000",
+      "where": "branch parcel/phased-label-68k",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,18 +19,18 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here: nothing running, all landed and pushed. Safe to clear.",
+  "nextBoundary": "When both fixes return, pass their checks, and are landed and pushed.",
   "queue": [
     {
       "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
-      "state": "open",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
-      "title": "Sound-processor labels are named as main-processor code at $8000; the debugger shows the wrong names there. Needs a fix-shape call first."
+      "title": "Sound-processor labels were named as main-processor code at $8000. Fixing with a stopgap rule now; asked sigil for an exact marker."
     },
     {
       "id": "F-EVENT-EVICTS-RESPONSE",
-      "state": "open",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "title": "A flood of events can throw away a queued reply, so a tool waits forever. Small fix plus a test."
@@ -81,7 +92,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your go: fix the reply-eviction bug (small) and/or the wrong-names-at-$8000 bug (needs a design pick), or d-51 / a look row",
-  "atBoundary": true,
-  "updatedAt": "2026-09-27T08:58:54Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-27T09:01:06Z"
 }
