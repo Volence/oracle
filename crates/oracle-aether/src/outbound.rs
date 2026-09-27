@@ -289,4 +289,95 @@ mod tests {
         assert_eq!(q.pop(), None);
         assert!(!q.push_event("late".into()));
     }
+
+    /// Drain everything currently queued without blocking on an empty queue.
+    fn drain(q: &Outbound) -> Vec<String> {
+        let mut out = Vec::new();
+        while !q.is_empty() {
+            out.push(q.pop().expect("non-empty queue yields a line"));
+        }
+        out
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (i). A queued response must survive an event flood of 10x capacity and be
+    /// delivered, and `take_dropped` must count exactly the events that were never delivered -- nothing
+    /// else. Before the fix, eviction popped the queue front whatever its kind, so the response was
+    /// discarded (the request was never answered) and counted as a "dropped event".
+    #[test]
+    fn a_queued_response_survives_an_event_flood() {
+        const CAP: usize = 4;
+        let q = Outbound::new(cap(CAP));
+        assert!(q.push_response("R".into()));
+        let events = 10 * CAP;
+        for i in 0..events {
+            assert!(q.push_event(format!("e{i}")), "push_event never fails on an open queue");
+        }
+        assert_eq!(q.len(), CAP, "the queue stays bounded by its capacity");
+        let dropped = q.take_dropped();
+        let got = drain(&q);
+        assert!(
+            got.iter().any(|l| l == "R"),
+            "the response was evicted by the event flood: delivered {got:?}"
+        );
+        let delivered_events = got.iter().filter(|l| l.starts_with('e')).count();
+        assert_eq!(
+            dropped as usize,
+            events - delivered_events,
+            "droppedEvents must count only events actually discarded (delivered {got:?})"
+        );
+        assert_eq!(got, ["R", "e37", "e38", "e39"], "the newest events survive, behind the response");
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (ii). Survivors reach the writer in exactly their push order: a response
+    /// still follows the events pushed before it and precedes those pushed after it.
+    #[test]
+    fn survivors_are_written_in_push_order() {
+        let q = Outbound::new(cap(5));
+        let pushed = ["e0", "R1", "e1", "R2", "e2", "e3", "e4", "R3-waits", "e5"];
+        q.push_event("e0".into());
+        q.push_response("R1".into());
+        q.push_event("e1".into());
+        q.push_response("R2".into());
+        q.push_event("e2".into()); // full: [e0 R1 e1 R2 e2]
+        q.push_event("e3".into()); // evicts e0
+        q.push_event("e4".into()); // evicts e1
+        let dropped = q.take_dropped();
+        let got = drain(&q);
+        assert_eq!(got, ["R1", "R2", "e2", "e3", "e4"], "survivors in push order, both responses kept");
+        assert_eq!(dropped, 2, "only e0 and e1 were discarded");
+        // Survivors are a subsequence of the push order -- nothing reordered.
+        let mut it = pushed.iter();
+        for line in &got {
+            assert!(it.any(|p| p == line), "{line} arrived out of push order in {got:?}");
+        }
+
+        // Interleaving with events that survive on both sides of a response.
+        let q = Outbound::new(cap(4));
+        q.push_response("R1".into());
+        q.push_event("e0".into());
+        q.push_event("e1".into());
+        q.push_response("R2".into()); // full: [R1 e0 e1 R2]
+        q.push_event("e2".into()); // evicts e0 -- the oldest EVENT, not R1
+        assert_eq!(drain(&q), ["R1", "e1", "R2", "e2"]);
+        assert_eq!(q.take_dropped(), 1);
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (iii). A queue full of responses only: an arriving event must neither
+    /// block nor evict a response. It is the one message that may go, so it is dropped and counted.
+    #[test]
+    fn an_event_into_a_queue_full_of_responses_is_dropped_not_the_responses() {
+        let q = Outbound::new(cap(2));
+        assert!(q.push_response("R1".into()));
+        assert!(q.push_response("R2".into()));
+        let start = Instant::now();
+        assert!(q.push_event("e0".into()), "the queue is open, so the push is accepted (and dropped)");
+        assert!(start.elapsed() < Duration::from_secs(1), "push_event must not block");
+        assert_eq!(q.len(), 2, "capacity still bounds the queue");
+        assert_eq!(q.take_dropped(), 1, "the incoming event is the one discarded, and it is counted");
+        assert_eq!(drain(&q), ["R1", "R2"], "both responses delivered, in order");
+        // With room again, events flow normally.
+        assert!(q.push_event("e1".into()));
+        assert_eq!(drain(&q), ["e1"]);
+        assert_eq!(q.take_dropped(), 0);
+    }
 }
