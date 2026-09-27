@@ -1,6 +1,12 @@
 {
-  "focus": "Rebooted; nothing running. CI rechecked green, so the three hub items held on 'oracle is red' can come to us.",
-  "inFlight": [],
+  "focus": "Reading the three suite items that were held for us, and answering each one.",
+  "inFlight": [
+    {
+      "what": "One agent reading the two hub drafts and sigil's routing note, answering each",
+      "where": "branch recon/hub-held-items",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,8 +14,15 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Here: nothing running, all landed and pushed. Safe to clear.",
+  "nextBoundary": "When the reading agent returns and its answers are landed and sent to the hub.",
   "queue": [
+    {
+      "id": "HUB-HELD-THREE",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null,
+      "title": "Read and answer the three suite items the hub held for us (event readiness, display status, sigil's symbol routing)."
+    },
     {
       "id": "DATA-DISPLAY-AUDIT",
       "state": "blocked",
@@ -67,7 +80,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your go: take the three hub items held for oracle (read two hub drafts, receive sigil's routing), or d-51 / a look row",
-  "atBoundary": true,
-  "updatedAt": "2026-09-27T08:48:20Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-27T08:50:37Z"
 }
