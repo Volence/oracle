@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing is running. Both fixes sit on their branches, one finished and unreviewed, one half-written.",
+  "nextBoundary": "Now: nothing is running. One fix is finished and unreviewed on its branch; the other's stopgap is half-written as uncommitted edits in its worktree.",
   "queue": [
     {
       "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
@@ -83,5 +83,5 @@
   ],
   "awaiting": "your go to finish the two small bug fixes the last session left half-way",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T09:15:42Z"
+  "updatedAt": "2026-09-27T09:17:00Z"
 }
