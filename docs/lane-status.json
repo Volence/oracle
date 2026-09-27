@@ -1,17 +1,6 @@
 {
-  "focus": "Fixing two small oracle bugs found this morning: a lost-reply bug and wrong names at $8000.",
-  "inFlight": [
-    {
-      "what": "Fix: a flood of events can throw away a queued reply",
-      "where": "branch parcel/event-evicts-response",
-      "agent": true
-    },
-    {
-      "what": "Fix: sound-processor labels naming main-processor code at $8000",
-      "where": "branch parcel/phased-label-68k",
-      "agent": true
-    }
-  ],
+  "focus": "Just booted. Two small bug fixes were left half-way when the last session ended; waiting for your go to finish them.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -19,21 +8,21 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When both fixes return, pass their checks, and are landed and pushed.",
+  "nextBoundary": "Now: nothing is running. Both fixes sit on their branches, one finished and unreviewed, one half-written.",
   "queue": [
     {
       "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
-      "state": "doing",
+      "state": "open",
       "size": "M",
       "blockedBy": null,
-      "title": "Sound-processor labels were named as main-processor code at $8000. Fixing with a stopgap rule now; asked sigil for an exact marker."
+      "title": "Sound-processor labels were named as main-processor code at $8000. Tests are written; the stopgap fix was half-done when the last session ended and needs finishing."
     },
     {
       "id": "F-EVENT-EVICTS-RESPONSE",
-      "state": "doing",
+      "state": "next",
       "size": "S",
       "blockedBy": null,
-      "title": "A flood of events can throw away a queued reply, so a tool waits forever. Small fix plus a test."
+      "title": "A flood of events can throw away a queued reply, so a tool waits forever. The fix and its test are written on a branch; they need checking and landing."
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -53,7 +42,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "next",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
@@ -92,7 +81,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-27T09:01:06Z"
+  "awaiting": "your go to finish the two small bug fixes the last session left half-way",
+  "atBoundary": true,
+  "updatedAt": "2026-09-27T09:15:42Z"
 }
