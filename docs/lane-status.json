@@ -1,5 +1,5 @@
 {
-  "focus": "Booted again. Two small bug fixes wait: one finished and needs checking, one half-written. Waiting for your go.",
+  "focus": "Booted fresh. Two small bug fixes wait: one finished and needs checking, one half-written. Waiting for your go.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -83,5 +83,5 @@
   ],
   "awaiting": "your go to finish the two small bug fixes the last session left half-way",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T12:17:05Z"
+  "updatedAt": "2026-09-27T13:16:51Z"
 }
