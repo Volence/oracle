@@ -44,9 +44,10 @@
 //! **A slow or dead client can never wedge the emulator, and never stalls the player's frame loop.** It is
 //! the same structural argument the standalone server rests on, unchanged: no socket is ever written from the
 //! thread that owns the machine. Connection threads do all socket I/O; events go through
-//! [`Outbound::push_event`](crate::outbound::Outbound::push_event), which drops oldest-first rather than
-//! waiting. `pump` itself only ever `try_recv`s, so an idle bus costs one non-blocking channel poll per frame
-//! and a client that stops reading its replies stalls nothing but its own reader thread.
+//! [`Outbound::push_event`](crate::outbound::Outbound::push_event), which drops the oldest queued event
+//! (never a response) rather than waiting. `pump` itself only ever `try_recv`s, so an idle bus costs one
+//! non-blocking channel poll per frame and a client that stops reading its replies stalls nothing but its
+//! own reader thread.
 //!
 //! **No single command can freeze the window.** See [`HostConfig::pump_budget`] and
 //! [`HOSTED_MAX_RUN_FRAMES`].
