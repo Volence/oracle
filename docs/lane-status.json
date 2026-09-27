@@ -1,5 +1,5 @@
 {
-  "focus": "Booted fresh. Two small bug fixes wait: one finished and needs checking, one half-written. Waiting for your go.",
+  "focus": "Booted again. Two small bug fixes still wait on your go (the hub's pick (1) carries it). Nothing running.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -81,7 +81,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your go to finish the two small bug fixes the last session left half-way",
+  "awaiting": "your go (or the hub's option 1) to check and land the two small bug fixes",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T14:16:58Z"
+  "updatedAt": "2026-09-27T15:16:58Z"
 }
