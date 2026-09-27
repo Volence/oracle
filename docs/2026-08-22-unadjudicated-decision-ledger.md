@@ -855,3 +855,5 @@ Phase Table keep today's behaviour, a stated limit.
 **What would have to be true for this to be wrong:** that Aether symbol addresses are meant to be CPU-agnostic
 (§4 and `AddrSpace` say 68000 bus), or that aeon adds a 68000 `PHASE` into RAM before sigil's token lands (then
 (b) drops a valid RAM name, and the token is the fix).
+
+**Correction to L-18, 2026-09-27 (from sigil, verified here):** half (a) is PARKED at sigil as `PHASE-ROW-CPU`. An `.emp` section's `cpu:` names the encoder that built the bytes, not the address space of its VMA. All six live rows come from aeon `soundbankhead.emp:58` (`cpu: m68000, vma: $8000`), so a CPU token would have printed `m68000` on every row and restated this exact misnaming with confidence. (b) therefore stands alone. Its premise is **address space, not CPU**: a VMA ≠ LMA row's VMA is in the Z80 bank-window space. Also false in the recon doc (`docs/2026-09-27-hub-held-items-read.md` §3): `parse_phase_line` (`symbols.rs:1534`) matches exactly six tokens and does NOT tolerate extra ones.

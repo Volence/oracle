@@ -277,3 +277,7 @@ to whoever owns aeon's `convsym` step, and it is latent with no current instance
 - **No crate test suite was run** (`cargo test` was not invoked in this worktree, and `vendor/` was not
   linked). The two measurements above are scratch crates in the session scratchpad that depend on this
   worktree's crates by path. Each has its control shown next to its result.
+
+---
+
+**Correction, 2026-09-27 (from sigil, verified at the overseer seat):** §3's "oracle's parser already keys rows on `VMA` and `LMA` and tolerates extra tokens" is FALSE. `parse_phase_line` (`crates/oracle-core/src/symbols.rs:1534-1559`) matches exactly six tokens and reports anything else as damage. Option (a), the CPU token, is parked at sigil (`PHASE-ROW-CPU`) for the reason given in ledger L-18's correction.
