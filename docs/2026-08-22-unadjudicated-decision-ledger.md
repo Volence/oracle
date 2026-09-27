@@ -829,3 +829,29 @@ right. Or that a gesture-time probe stalls a click on a slow filesystem (ten `st
 **Booked, not built:** `F-SLOT-REPROBE-ON-GESTURE` (S), a follow-up parcel.
 
 **Built (2026-09-17), LANDED merge `ef2b06d`:** `F-SLOT-REPROBE-ON-GESTURE` on `parcel/slot-reprobe` (`8186d5c`, `e98d6f0`). `States::select`/`step`/`save`/`load` each end in `States::probe`, and that covers all nine gesture paths. One probe costs 1-4 µs warm on this machine's local disks; a network filesystem was not measured. See the debug-window audit's `L-17` addendum.
+
+## L-18 — how oracle stops naming 68000 code with Z80-phased labels (`F-PHASED-LABEL-IN-68K-SYMBOLS`) · `SELF-RULED`
+
+**Verdict: both halves, (b) now and (a) as its exact replacement.** Raised by `HUB-HELD-THREE`
+(`docs/2026-09-27-hub-held-items-read.md` §3); the hub left the shape to this lane (2026-09-27, standing delegation).
+**Reviewer: none — substituted-reviewer rule, seat on HOLD.** Internal, reversible, no look.
+
+**The defect:** asl/sigil listings file a `PHASE`d label in the ordinary `Symbol Table` at its VMA
+(`SoundTablesZ80_Head : 8000 C`), and `SymbolTable::build` ingests that as a 68000 bus address. So 68000 code at
+`$8000-$801B` is named `SoundTablesZ80_Head+…`, and `lookup_symbol` by name answers `$008000`, where the bytes are
+not (they sit at LMA `$0B8000`). The `Phase Table` rows (VMA, LMA) carry no CPU, and `symbols.rs` refuses to guess.
+
+**Options:** (a) ask sigil for an additive CPU token on each `PHASE` row and honour it: exact, but it waits on
+another lane and does nothing for listings already on disk. (b) Interim rule in oracle: a name whose phase row has
+VMA ≠ LMA is Z80-phased. Its 68000 forward address is the LMA, it never names a 68000 address at its VMA, and it
+names its LMA. This is right for all six rows in today's listings. (c) Drop phased names entirely: loses the
+correct `$0B8000` naming. (d) Leave it: a silent wrong name, which the symbol module exists to prevent.
+
+**Why (b)+(a):** (b) makes today's answers correct with no wait. (a) removes (b)'s one assumption (every relocated
+block is Z80), which fails only for a 68000 block phased into RAM, and none exists. When the token is present it
+overrides (b); when it is absent, (b) applies and the assumption is stated in `symbols.rs`. Listings with no
+Phase Table keep today's behaviour, a stated limit.
+
+**What would have to be true for this to be wrong:** that Aether symbol addresses are meant to be CPU-agnostic
+(§4 and `AddrSpace` say 68000 bus), or that aeon adds a 68000 `PHASE` into RAM before sigil's token lands (then
+(b) drops a valid RAM name, and the token is the fix).
