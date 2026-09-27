@@ -1,12 +1,6 @@
 {
-  "focus": "Reading the three suite items that were held for us, and answering each one.",
-  "inFlight": [
-    {
-      "what": "One agent reading the two hub drafts and sigil's routing note, answering each",
-      "where": "branch recon/hub-held-items",
-      "agent": true
-    }
-  ],
+  "focus": "Answered the three suite items held for us; found three small oracle bugs and booked them.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,14 +8,21 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the reading agent returns and its answers are landed and sent to the hub.",
+  "nextBoundary": "Here: nothing running, all landed and pushed. Safe to clear.",
   "queue": [
     {
-      "id": "HUB-HELD-THREE",
-      "state": "doing",
+      "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
+      "state": "open",
+      "size": "M",
+      "blockedBy": null,
+      "title": "Sound-processor labels are named as main-processor code at $8000; the debugger shows the wrong names there. Needs a fix-shape call first."
+    },
+    {
+      "id": "F-EVENT-EVICTS-RESPONSE",
+      "state": "open",
       "size": "S",
       "blockedBy": null,
-      "title": "Read and answer the three suite items the hub held for us (event readiness, display status, sigil's symbol routing)."
+      "title": "A flood of events can throw away a queued reply, so a tool waits forever. Small fix plus a test."
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -80,7 +81,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-27T08:50:37Z"
+  "awaiting": "your go: fix the reply-eviction bug (small) and/or the wrong-names-at-$8000 bug (needs a design pick), or d-51 / a look row",
+  "atBoundary": true,
+  "updatedAt": "2026-09-27T08:58:54Z"
 }

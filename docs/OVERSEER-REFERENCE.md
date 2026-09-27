@@ -1844,6 +1844,11 @@ closed; its narrative is in `OVERSEER-LOG.md` and the brief lesson it produced i
 merely that the surface is legacy. Explicitly NOT a fix recommendation for `oracle-old`: it is
 reference-only and the cutover exists to delete it.
 
+**▶ REGISTERED 2026-09-27, from `HUB-HELD-THREE` (`docs/2026-09-27-hub-held-items-read.md`, agent tip `57fde82`). Three rows, none fixed:**
+- **`F-PHASED-LABEL-IN-68K-SYMBOLS` (measured, live).** Z80-phased labels also appear as ordinary `Symbol Table` rows (`SoundTablesZ80_Head : 8000 C`, verified at this seat in `aeon/s4.debug.lst`, whose `PHASE` row says VMA `$8000` LMA `$B8000`), so they are ingested as 68000 addresses: forward lookup answers `$008000`, and real 68000 code at `$8000-$801B` is named `SoundTablesZ80_Head+…`. Fix shape is a design call: (a) a CPU token on each `PHASE` row (a sigil ask) or (b) an interim oracle rule (relocated phased names leave `rev`, forward takes LMA). Confirm the contract reads symbol addresses as 68000 bus addresses before (b). The fixture must carry phased names in BOTH sections.
+- **`F-EVENT-EVICTS-RESPONSE` (measured at unit level; code verified at this seat).** `Outbound::push_event` pops the queue front whatever its kind (`outbound.rs:83-87`), so an event flood can evict a queued reply: the request goes unanswered and the loss is counted as a dropped event. Gate with the fix: a queued response survives any event flood.
+- **`F-FIRST-PRESENT-RUNTIME-SERVE` (reasoned from code, not run).** The first-drain deferral keys on `iterations == 1` (`oracle-player/src/main.rs:895`), not on "first drain since serving began", so a toolbar serve mid-session leaves a one-frame gap where a pipelined readback gets `noDisplay`. TAG: needs a live check or a player gate that calls `serve_now` then queues `initialize`+`screen_text` together.
+
 ## ⚑ OWNER RULING: PUSH AUTHORIZATION. ✅ **CONFIRMED DIRECTLY BY THE OWNER, 2026-08-24, IN THIS SESSION**
 
 **STANDING APPROVAL, OWN REPO ONLY: a lane may push its own repo's master without asking each

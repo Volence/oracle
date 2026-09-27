@@ -502,3 +502,7 @@ The `F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR landing (orig line 814, merge `9
 **Hub CONFIRMED the retirement (18:1xZ, no CR); row closed. Re-open triggers are in the doc.**
 
 **NEXT:** no owner-free row remains. Everything waits on his eyes or ear (d-51, the look rows). `next` is `M24-PARCEL-4-INT-LEVEL` with its blocker named, under the no-`doing` exception in `contract/LANE_STATUS.md` (state row).
+
+**`HUB-HELD-THREE` LANDED 2026-09-27** (docs only, `docs/2026-09-27-hub-held-items-read.md`, agent tip `57fde82`), on the hub's go (empyrean `7aa5019c`, clause (d), verified an ancestor). F-EVENTS-BEGIN-UNSTATED: AGREE-WITH-CORRECTIONS (the draft's "no incident" is false: `F-MACHINEREPLACED-EVENT-RACE`; §3 re-cite `:821`); oracle needs no change. F-FIRST-PRESENT-REFUSAL: premise STALE (`c590c7d` landed after it; hub ruled `bde5b1b3`, accepted our clause `2258736f`); only the hub's apply pass is open, costing us one routine re-vendor. DEB2: received with both sigil caveats; no live `$8000` two-symbol collision. Three rows booked in `docs/OVERSEER-REFERENCE.md` (follow-up register, 2026-09-27).
+
+**NEXT:** `F-PHASED-LABEL-IN-68K-SYMBOLS` is the one owner-free row with a live wrong answer; it needs a fix-shape call (sigil CPU token vs interim oracle rule) before building. `F-EVENT-EVICTS-RESPONSE` is a small, owner-free fix. d-51 and the look rows stay his.
