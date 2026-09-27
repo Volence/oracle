@@ -1,5 +1,5 @@
 {
-  "focus": "Rebooted; nothing running. Three hub items are held for us on a stale 'oracle is red'; we're green and could take them.",
+  "focus": "Rebooted; nothing running. CI rechecked green, so the three hub items held on 'oracle is red' can come to us.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -69,5 +69,5 @@
   ],
   "awaiting": "your go: take the three hub items held for oracle (read two hub drafts, receive sigil's routing), or d-51 / a look row",
   "atBoundary": true,
-  "updatedAt": "2026-09-27T08:47:08Z"
+  "updatedAt": "2026-09-27T08:48:20Z"
 }
