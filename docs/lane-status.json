@@ -1,5 +1,5 @@
 {
-  "focus": "Four small bug fixes landed tonight; the last one's online check is still running. The rest waits on you.",
+  "focus": "Four small bug fixes landed last night and all passed their online checks. The rest waits on you.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,7 +8,7 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything committed and pushed; last landing's online check in progress.",
+  "nextBoundary": "Now: nothing running, everything committed and pushed, online checks green.",
   "queue": [
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -67,7 +67,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your clear: nothing is unbanked, so a fresh session loses nothing. After that, your listen and the look-at-it checks.",
+  "awaiting": "Your listen (sound-interrupt kit) and the look-at-it checks; nothing else on the board is free to start.",
   "atBoundary": true,
-  "updatedAt": "2026-09-28T05:47:25Z"
+  "updatedAt": "2026-09-28T06:29:41Z"
 }
