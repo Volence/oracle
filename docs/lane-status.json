@@ -1,6 +1,12 @@
 {
-  "focus": "Booted and holding. Every test ROM passes and CI is green; the rest of the board waits on you.",
-  "inFlight": [],
+  "focus": "Checking whether our emulator is behind the broken music you heard at the start of the woven Sonic 2 level.",
+  "inFlight": [
+    {
+      "what": "Recording the woven level's first seconds of sound in our emulator and comparing them with aeon's reference",
+      "where": "agent worktree branch",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,8 +14,15 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything committed and pushed, online checks green.",
+  "nextBoundary": "When the measuring agent returns with a verdict: our bug, not ours, or undetermined.",
   "queue": [
+    {
+      "id": "WOVEN-MUSIC-BANK",
+      "title": "You heard broken music at the woven level's start. Measuring whether our emulator reads the high sound banks wrong.",
+      "state": "doing",
+      "size": "S",
+      "blockedBy": null
+    },
     {
       "id": "DATA-DISPLAY-AUDIT",
       "state": "blocked",
@@ -28,7 +41,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "next",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
@@ -67,7 +80,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "Your listen (sound-interrupt kit) and the look-at-it checks; nothing else on the board is free to start.",
-  "atBoundary": true,
-  "updatedAt": "2026-09-28T17:30:47Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-28T19:44:20Z"
 }
