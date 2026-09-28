@@ -344,8 +344,7 @@ fn real_debug_lst_phase_table_is_consumed_not_counted_as_damage() {
             );
             if let Some(r) = t.resolve(e.vma) {
                 assert!(
-                    t.phase_of(&r.symbol.name)
-                        .is_none_or(|p| !p.is_relocated()),
+                    t.phase_of(&r.symbol.name).is_none_or(|p| !p.is_relocated()),
                     "resolve(${:06X}) still answers a Z80-phased name, `{}`",
                     e.vma,
                     r.symbol.name
