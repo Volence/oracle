@@ -1,5 +1,5 @@
 {
-  "focus": "Three small bug fixes landed tonight. Next I check the label fix on the running emulator myself.",
+  "focus": "Three small bug fixes landed tonight and the label fix checked live. Next: a small naming quirk found during that check.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -11,8 +11,8 @@
   "nextBoundary": "Now: nothing running, everything committed and pushed.",
   "queue": [
     {
-      "id": "LIVE-CHECK-PHASED-LABEL",
-      "title": "Confirm on the running emulator that the sound-chip label fix shows the right names (I can do this myself, no agent).",
+      "id": "F-REVERSE-PREFERS-SYNTHETIC",
+      "title": "Where several names share one address, the debugger can show a compiler-generated padding label instead of the real one. Found during tonight's live check.",
       "state": "next",
       "size": "S",
       "blockedBy": null
@@ -76,5 +76,5 @@
   ],
   "awaiting": null,
   "atBoundary": true,
-  "updatedAt": "2026-09-28T04:38:52Z"
+  "updatedAt": "2026-09-28T04:40:40Z"
 }
