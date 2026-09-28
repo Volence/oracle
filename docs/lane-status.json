@@ -1,5 +1,5 @@
 {
-  "focus": "Booted again (session 57). Two small bug fixes are ready to check and land on your go. Nothing running.",
+  "focus": "On the hub's go: checking and landing the fix for tools that could wait forever on a lost reply.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -8,18 +8,18 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing is running. One fix is finished and unreviewed on its branch; the other's stopgap is half-written as uncommitted edits in its worktree.",
+  "nextBoundary": "After the lost-reply fix lands and the hub is told; the label fix follows it.",
   "queue": [
     {
       "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
-      "state": "open",
+      "state": "next",
       "size": "M",
       "blockedBy": null,
       "title": "Sound-processor labels were named as main-processor code at $8000. Tests are written; the stopgap fix was half-done when the last session ended and needs finishing."
     },
     {
       "id": "F-EVENT-EVICTS-RESPONSE",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null,
       "title": "A flood of events can throw away a queued reply, so a tool waits forever. The fix and its test are written on a branch; they need checking and landing."
@@ -81,7 +81,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "your go (or the hub's option 1) to check and land the two small bug fixes",
-  "atBoundary": true,
-  "updatedAt": "2026-09-28T03:17:09Z"
+  "awaiting": null,
+  "atBoundary": false,
+  "updatedAt": "2026-09-28T03:17:32Z"
 }
