@@ -516,3 +516,7 @@ The `F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR landing (orig line 814, merge `9
 **NEXT:** no owner-free row remains on the board (`F-SERVERNAME-PREDATES-THE-RENAME` is "never alone"). Everything waits on his eyes or ear (d-51, the look rows). `next` is `M24-PARCEL-4-INT-LEVEL` with its blocker named, under the no-`doing` exception.
 
 **At boot (hub, 2026-09-28): read CI for `07f1913` FIRST** — `python3 tools/ci-verdict.py $(git rev-parse 07f1913)`; the other three landings are green.
+
+**`WOVEN-MUSIC-BANK` LANDED 2026-09-28, merge `d1ee2495`** (hub ask, owner-free; agent tip `f938ced6`; `land.sh` GREEN, pushed). The owner heard broken woven S2 boot music on aeon's clip ROM; **NOT OURS in the core**: headless render matches GPGX (envelope 0.885, control 0.613), runtime Z80 tap 163,744 window reads / 0 mismatches, EHZ read and CPZ never. New gate `bank_window_reads_rom_above_one_mebibyte_via_serial_latch` (my red-first: `0x1F` latch mask, red at `bus.rs:470`). Write-up `docs/2026-09-28-woven-music-bank-check.md`. ▶ **Open, fires only if he says he used oracle:** the player's real-time audio path and a kept `.srm` are unexercised by headless renders.
+
+**NEXT:** no owner-free row remains. Everything waits on his eyes or ear (d-51, the look rows).
