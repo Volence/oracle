@@ -3030,6 +3030,162 @@ mod loop_tests {
         let _ = std::fs::remove_file(&unlink);
     }
 
+    /// ## ★ **A bus opened MID-SESSION answers its first requests from a window that exists**
+    /// (`F-FIRST-PRESENT-RUNTIME-SERVE`), driven through the real `Loop::iterate`.
+    ///
+    /// The row above pins the first drain of the LOOP. This pins the first drain of the BUS, which is a
+    /// different fact whenever the bus opens late — the toolbar's *"serve"* button, `Bus::serve_now`.
+    /// Both publishes (`set_pacing`, `publish_screen_text`) are gated on `is_serving`, so a window that
+    /// has run for a while unserved has published **nothing**, and the drain of the iteration after the
+    /// bus opens sits, like every drain past iteration 1, ahead of that iteration's publishes. One
+    /// `Host::pump` answers every request it finds queued, so a request that drain answers is refused
+    /// `noDisplay` / `display: false` by a window that has been on the glass for many frames.
+    ///
+    /// # Why a request can reach that drain at all
+    ///
+    /// A connection's first message must be `initialize`, and the connection thread blocks on its reply,
+    /// so the only requests that drain can see are those forwarded while the same pump is still
+    /// answering — a client pipelining `initialize` + `screen_text` behind another peer's traffic. That is
+    /// the very mechanism behind CI run 34752339602 (`F-PLAYER-SCREENTEXT-FIRST-READ`: several answers
+    /// in one drain). The handshake here is therefore run with the drain's own pump (`Peer::handshake`,
+    /// the row above's device), which models *"initialize answered in the same pump"* deterministically
+    /// instead of racing a reader thread's wake-up.
+    ///
+    /// # What could make it green for the wrong reason, and what rules each out
+    ///
+    /// * *The bus was serving from launch, so this is the row above again.* The launch bind is made to
+    ///   fail (a regular file where the socket's directory must be — `Bus::serve_now`'s own fixture) and
+    ///   `is_serving()` is asserted `false` across several turns.
+    /// * *Iteration 1's deferral is what answers.* Several turns run before the bus opens, and the loop's
+    ///   iteration count is asserted past 1.
+    /// * *Something had published anyway, so `display: true` witnesses nothing.* Probed in-process after
+    ///   those unserved turns and before `serve_now`: `emulator/screen_text` refuses `noDisplay`.
+    /// * *The requests were answered by a later drain that had a publish behind it.* They are queued and
+    ///   waited for before the turn, and asserted unanswered.
+    ///
+    /// # What it is blind to
+    ///
+    /// It calls `Bus::serve_now` between turns rather than clicking the toolbar button inside `build_ui`.
+    /// The button's position is *later* than this (after that iteration's `serving` read, so that
+    /// iteration publishes nothing either), which makes the two equivalent for the one question asked
+    /// here: whether the next drain has a publish behind it.
+    #[test]
+    fn a_bus_opened_mid_session_is_not_told_there_is_no_window() {
+        let dir = std::env::temp_dir().join(format!("pfr-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).expect("a /tmp dir for the fixture socket");
+        // A regular file where the socket's DIRECTORY must be: the launch bind fails retryably, exactly
+        // as `serve_now_opens_the_bus_at_runtime_and_refuses_to_take_a_live_peers_path` builds it.
+        let blocker = dir.join("f");
+        std::fs::write(&blocker, b"not a directory").expect("write the blocker");
+        let socket = blocker.join("s");
+        let mut lp = Loop::new(
+            Machine::new(oracle_core::testrom::build(), None),
+            Instant::now(),
+            // The governor OFF, so every turn owns its frame and this row never waits on a clock.
+            Some(0.0),
+            String::from("(fixture)"),
+            symbols::Loaded {
+                table: None,
+                path: None,
+                fatal: None,
+            },
+            Some(Some(socket.clone())),
+        );
+        assert!(
+            !lp.bus.is_serving(),
+            "the launch bind must FAIL, or this is the iteration-1 row over again"
+        );
+
+        // --- A session, unserved: the window runs and draws, and publishes nothing. ---
+        let ctx = egui::Context::default();
+        for _ in 0..4 {
+            turn(&ctx, &mut lp);
+        }
+        assert!(!lp.bus.is_serving());
+        assert!(
+            lp.iterations > 1 && lp.machine.frames() > 1,
+            "control: the loop must be past iteration 1 and on the glass (iterations {}, frames {})",
+            lp.iterations,
+            lp.machine.frames()
+        );
+        let probe = lp.bus.call(
+            lp.machine.system_mut(),
+            "emulator/screen_text",
+            &serde_json::json!({}),
+        );
+        assert_eq!(
+            probe.reason(),
+            Some("noDisplay"),
+            "an unserved window already had a snapshot, so `display: true` below would witness nothing"
+        );
+
+        // --- The bus opens mid-session: what the toolbar's button calls. ---
+        std::fs::remove_file(&blocker).expect("clear the obstacle");
+        let _ = lp.bus.serve_now();
+        assert!(
+            lp.bus.is_serving(),
+            "serve_now did not open the bus, so no client can reach it and nothing below is a test"
+        );
+
+        // Two clients, initialised by the drain's own pump — no `turn`, so no publish has run since the
+        // bus opened.
+        let iterations = lp.iterations;
+        let mut glass = Peer::connect(&socket);
+        glass.handshake(&mut lp, "screen-text");
+        let mut state = Peer::connect(&socket);
+        state.handshake(&mut lp, "status");
+        assert_eq!(
+            lp.iterations, iterations,
+            "the handshake turned the loop, which would publish before the drain this row measures"
+        );
+
+        let text = glass.request("emulator/screen_text", serde_json::json!({}));
+        let status = state.request("emulator/status", serde_json::json!({}));
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            glass.poll(text).is_none() && state.poll(status).is_none(),
+            "a reply arrived before the loop turned, so nothing below is about the loop's order"
+        );
+
+        // --- The first turn since the bus opened, and the answers. ---
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut text_reply = None;
+        let mut status_reply = None;
+        while text_reply.is_none() || status_reply.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "the window never answered — the first drain since serving was deferred and never run"
+            );
+            turn(&ctx, &mut lp);
+            text_reply = text_reply.or_else(|| glass.poll(text));
+            status_reply = status_reply.or_else(|| state.poll(status));
+        }
+        let text_reply = text_reply.unwrap();
+        let status_reply = status_reply.unwrap();
+
+        assert!(
+            text_reply.get("error").is_none(),
+            "`emulator/screen_text` was refused by a window that has been showing frames since before \
+             its bus opened: {text_reply}"
+        );
+        let surfaces = text_reply["result"]["surfaces"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a reply with no surfaces array: {text_reply}"));
+        assert!(
+            !surfaces.is_empty(),
+            "an EMPTY surface list means `the screen is blank`, which is a different answer: {text_reply}"
+        );
+        assert_eq!(
+            status_reply["result"]["display"],
+            serde_json::json!(true),
+            "`emulator/status` said there is no display, from a window that has drawn many frames: \
+             {status_reply}"
+        );
+
+        drop(lp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn a_loop() -> Loop {
         let mut machine = Machine::new(oracle_core::testrom::build(), None);
         machine.system_mut().set_pad(
