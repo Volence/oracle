@@ -514,3 +514,5 @@ The `F-Z80-ACCESSES-UNWATCHED` recon + DRAFT CR landing (orig line 814, merge `9
 **2026-09-28, later, under the hub's standing go (take the next owner-free row at each boundary):** `F-FIRST-PRESENT-RUNTIME-SERVE` LANDED (merge `437ceae`, real, fixed); the L-18 live check was done headless at this seat (correct on s4 and demo) and found `F-REVERSE-PREFERS-SYNTHETIC`, which LANDED (merge `9c2f7d5`, pushed `07f1913`). CI green: `2172039` run 36374819736, `3334f23` run 36376151201, `9259891` run 36378585070. Closure notes are on each row in the follow-up register.
 
 **NEXT:** no owner-free row remains on the board (`F-SERVERNAME-PREDATES-THE-RENAME` is "never alone"). Everything waits on his eyes or ear (d-51, the look rows). `next` is `M24-PARCEL-4-INT-LEVEL` with its blocker named, under the no-`doing` exception.
+
+**At boot (hub, 2026-09-28): read CI for `07f1913` FIRST** — `python3 tools/ci-verdict.py $(git rev-parse 07f1913)`; the other three landings are green.
