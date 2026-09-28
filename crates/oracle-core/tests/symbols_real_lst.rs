@@ -313,22 +313,51 @@ fn real_debug_lst_phase_table_is_consumed_not_counted_as_damage() {
     for e in t.phase_entries() {
         // The fact only real bytes can attest: every phased name is a symbol this listing also declares,
         // at its VMA — which is what "every address above is a VMA" means, checked rather than believed.
+        // Read from the listing TEXT, because after L-18 the parsed symbol of a relocated name carries
+        // its LMA: this row is the premise of that rule, so it must not be read back through the rule.
+        let row = format!(" {} : {:X} ", e.name, e.vma);
+        assert!(
+            text.lines().any(|l| l.starts_with(&row)),
+            "phased name `{}` is not a Symbol Table row at its VMA ${:X} in this listing",
+            e.name,
+            e.vma
+        );
         let s = t
             .by_name(&e.name)
             .unwrap_or_else(|| panic!("phased name `{}` is not a symbol in this listing", e.name));
-        assert_eq!(
-            s.raw_addr, e.vma,
-            "`{}` is listed at ${:08X} but its phase row calls the VMA ${:08X}",
-            e.name, s.raw_addr, e.vma
-        );
-        // …and the phase row is still not a symbol: nothing here put the LMA into addr→name.
         if e.is_relocated() {
+            // L-18 (F-PHASED-LABEL-IN-68K-SYMBOLS): a relocated block is Z80-phased. Its 68000 name
+            // is its LMA — where the 68000 sees the bytes — and it never names 68000 code at its VMA.
+            assert_eq!(
+                (s.raw_addr, s.addr),
+                (e.lma, e.lma & 0x00FF_FFFF),
+                "`{}` must resolve forward to its LMA ${:08X}, not its Z80 VMA ${:08X}",
+                e.name,
+                e.lma,
+                e.vma
+            );
             assert!(
-                t.symbols_at(e.lma).iter().all(|x| x.name != e.name),
-                "`{}` answered a query at its LMA ${:08X}",
+                t.symbols_at(e.vma).iter().all(|x| x.name != e.name),
+                "`{}` still names 68000 address ${:06X} (its Z80 VMA)",
+                e.name,
+                e.vma
+            );
+            if let Some(r) = t.resolve(e.vma) {
+                assert!(
+                    t.phase_of(&r.symbol.name).is_none_or(|p| !p.is_relocated()),
+                    "resolve(${:06X}) still answers a Z80-phased name, `{}`",
+                    e.vma,
+                    r.symbol.name
+                );
+            }
+            assert!(
+                t.symbols_at(e.lma).iter().any(|x| x.name == e.name),
+                "`{}` must name its LMA ${:08X}",
                 e.name,
                 e.lma
             );
+        } else {
+            assert_eq!(s.raw_addr, e.vma, "an identity phase row moves nothing");
         }
     }
     println!(
@@ -363,8 +392,15 @@ fn real_s4_lst_body_and_table_halves_agree() {
         let f = full
             .by_name(&s.name)
             .unwrap_or_else(|| panic!("{} missing from table half", s.name));
+        // The body half is cut above the Phase Table, so it has no signal to relocate a Z80-phased name
+        // (L-18) and carries it at the VMA both halves list; the full parse carries it at its LMA.
+        let (want_full, want_body) = match full.phase_of(&s.name).filter(|e| e.is_relocated()) {
+            Some(e) => (e.lma, e.vma),
+            None => (s.raw_addr, s.raw_addr),
+        };
         assert_eq!(
-            f.raw_addr, s.raw_addr,
+            (f.raw_addr, s.raw_addr),
+            (want_full, want_body),
             "address disagreement for {}",
             s.name
         );

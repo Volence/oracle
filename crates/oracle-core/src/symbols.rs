@@ -128,6 +128,29 @@
 //! lives in its own section with its own accessors, by the same structural argument §11.36 made for
 //! equates: nothing downstream has to *remember* to filter it out.
 //!
+//! ## …but it moves the `Symbol Table` row it describes (ledger L-18, `F-PHASED-LABEL-IN-68K-SYMBOLS`)
+//!
+//! The phase row is not the only place a phased label appears. The emitter **also** files it as an
+//! ordinary `Symbol Table` row at its VMA (`SoundTablesZ80_Head : 8000 C |`), and that row, read as a
+//! 68000 bus address, made `address_of("SoundTablesZ80_Head")` answer `$008000` (unrelated 68000 code)
+//! and made the real 68000 code at `$8000-$801B` resolve to `SoundTablesZ80_Head+…`.
+//!
+//! **The rule (interim (b), L-18):** *a `PHASE` row with VMA ≠ LMA has its VMA in Z80 address space
+//! (the bank window in `s4`, Z80 RAM in `demo`); its 68000-space address is the LMA.* So in
+//! [`SymbolTable::build`], before anything is indexed, the `Symbol Table` row of such a name is moved
+//! to the LMA (both [`Symbol::raw_addr`] and [`Symbol::addr`]). Forward lookup answers the LMA; the
+//! VMA never enters the reverse index, so a genuine 68000 label there wins; the LMA does enter it.
+//! The VMA is not lost: it stays on the phase row, [`SymbolTable::phase_of`]. Nothing in oracle looks
+//! symbols up in Z80 space today (a Z80 watch hit's `pc` is never symbolised), so the phase row is
+//! where it is kept.
+//!
+//! The premise is about **address space, not CPU**, and it is stated once, on
+//! [`PhaseEntry::vma_is_z80_space`], which is the only place to change it. What it leaves alone:
+//! `VMA == LMA` rows; relocated names that are phase-only (nothing is invented for them); and every
+//! listing with no `Phase Table`, which carries no signal to act on (a stated limit: the frozen
+//! `fixtures/aeon/` listings are that shape and keep their old answers). Its known limit is a block phased
+//! into 68000 RAM, whose VMA would be a genuine 68000 address; none exists.
+//!
 //! # The other dialect: stock AS listings (`sonic.lst`, the classic disassemblies)
 //!
 //! Sigil's emitter is one producer of this format; the **AS macro assembler itself** is the other, and the
@@ -374,6 +397,11 @@ pub struct Symbol {
     /// truncated here, which yields exactly the conventional 32-bit form (`0xFFFF_D000`) — the same value
     /// sigil would have written for the same location. The invariant `addr == raw_addr & BUS_ADDR_MASK`
     /// therefore holds at both widths.
+    ///
+    /// **A Z80-phased label is the one exception to "as written in the `Symbol Table`"** (L-18): its row
+    /// there gives the Z80 VMA, and this field instead holds the `Phase Table` row's LMA, as that row
+    /// writes it (`$000B8000`), so the invariant still holds and the 68000 address is what both fields
+    /// say. The VMA is on [`PhaseEntry::vma`] via [`SymbolTable::phase_of`].
     pub raw_addr: u32,
     /// The 24-bit bus address (`0xFF_8CFA`) — **what every lookup here matches against** (trap 2).
     pub addr: u32,
@@ -603,8 +631,9 @@ pub struct SymbolTable {
     /// `None` when the listing carries no `Equate Table` section at all — every listing sigil emitted
     /// before 2026-08-19, and every AS listing.
     equates: Option<EquateSection>,
-    /// `None` when the listing carries no `Phase Table` section at all. The **third** population: neither
-    /// its names nor its addresses reach `syms`, `rev` or the equate map. See the module docs.
+    /// `None` when the listing carries no `Phase Table` section at all. The **third** population: its rows
+    /// are never pushed into `syms`, `rev` or the equate map. A relocated row does move the `Symbol Table`
+    /// row of the same name to its LMA (L-18; see the module docs and `build`).
     phase: Option<PhaseSection>,
     non_address: NonAddressRows,
 }
@@ -662,7 +691,9 @@ pub struct PhaseEntry {
     /// header says. ⚑ **Not necessarily a 68000 bus address**: for Z80-phased blocks this is what the
     /// *Z80* sees through its bank window (`$8000`), so it is stored exactly as written and is neither
     /// masked with [`BUS_ADDR_MASK`] nor classified with [`AddrSpace`]. Doing either would be this module
-    /// quietly asserting a bus it has no evidence for.
+    /// quietly asserting a bus it has no evidence for. Which space it is in is decided in exactly one
+    /// place, [`vma_is_z80_space`](Self::vma_is_z80_space) (L-18); this is where the VMA of a
+    /// Z80-phased label is kept once its `Symbol Table` row has been moved to the LMA.
     pub vma: u32,
     /// **Where the code is stored** — the offset in the assembled image the loader copies it from.
     pub lma: u32,
@@ -673,6 +704,38 @@ impl PhaseEntry {
     /// answer: a phase directive that resolves to the identity is still a phase directive.
     pub fn is_relocated(&self) -> bool {
         self.vma != self.lma
+    }
+
+    /// **Is this row's [`vma`](Self::vma) an address in the Z80's own address space** rather than on
+    /// the 68000 bus? The rule's premise lives here, and only here (ledger **L-18**,
+    /// `F-PHASED-LABEL-IN-68K-SYMBOLS`, interim rule (b)):
+    ///
+    /// > **A `PHASE` row with VMA ≠ LMA has its VMA in Z80 address space; its 68000-space address is
+    /// > the LMA.** (The assumption: *every* VMA ≠ LMA block is phased into Z80 space.)
+    ///
+    /// L-18 words the premise as "the Z80 bank window", which is what every `s4*.lst` row is (six rows,
+    /// VMA `$8000-$8633`, LMA `$0B8000-…`). The live `demo*.lst` rows are Z80 space too, but Z80 **RAM**,
+    /// not the window: `Z80_IdleProgram` VMA `$0000`, LMA `$0003C8` (`demo.lst`, 2026-09-27) — the idle
+    /// program the 68000 copies into Z80 RAM. The same defect bites there (68000 `$000000`, the vector
+    /// table, was named `Z80_IdleProgram`), and the same rule fixes it, so the predicate is stated as
+    /// *Z80 space* and the demo shape is pinned by its own test.
+    ///
+    /// It is a statement about **address space, not CPU**. The six `s4*.lst` rows all come from aeon
+    /// `soundbankhead.emp` `section soundbankhead (cpu: m68000, vma: $8000)`: 68000-*assembled* data the
+    /// Z80 reads through its bank window at `$8000`, stored in the image at `$0B8000`. The row states
+    /// neither a CPU nor a space. The per-row CPU token once proposed as this rule's exact replacement
+    /// (sigil `PHASE-ROW-CPU`, L-18 half (a)) is **parked**: a section's `cpu:` names the encoder that
+    /// built the bytes, not the address space of its VMA, so it would print `m68000` on all six rows and
+    /// restate this misnaming with confidence. And `parse_phase_line` matches **exactly six tokens**
+    /// (`PHASE name VMA $v LMA $l`); it does not tolerate an extra one, so no additive token could be
+    /// honoured without changing it too.
+    ///
+    /// ⚑ **Known limit:** a block phased into **68000 RAM** (VMA a 68000 address, VMA ≠ LMA) would be
+    /// misread by this rule — its RAM name would be dropped in favour of the LMA. None exists in any
+    /// listing measured (six rows in `s4*.lst`, two in `demo*.lst`, all Z80 space). If one ever appears,
+    /// this predicate is the one place to change, and every consumer follows.
+    pub fn vma_is_z80_space(&self) -> bool {
+        self.is_relocated()
     }
 }
 
@@ -893,6 +956,29 @@ impl SymbolTable {
     }
 
     fn build(mut syms: Vec<Symbol>, source: TableSource, counts: ParseCounts) -> Self {
+        // L-18 (`F-PHASED-LABEL-IN-68K-SYMBOLS`): a phased label is ALSO an ordinary `Symbol Table` row,
+        // filed at its VMA. Where that VMA is a Z80-space address (the premise, stated once on
+        // `PhaseEntry::vma_is_z80_space`), the row is moved to the 68000 address the phase row gives
+        // before anything is indexed — so forward lookup answers the LMA, the VMA never enters `rev`,
+        // and the LMA does, with no lookup having to remember a rule. Done before the sort so the moved
+        // row lands in address order. The VMA itself stays on the phase row (`phase_of`). A listing
+        // with no `Phase Table` has no signal and is left exactly as written (a stated limit).
+        if let Some(p) = counts.phase.as_ref() {
+            for s in &mut syms {
+                // Only a Z80-space row moves anything. A row whose VMA is a 68000 address (today: the
+                // identity rows) leaves the Symbol Table row exactly as the listing wrote it.
+                if let Some(e) = p
+                    .by_name
+                    .get(&s.name)
+                    .map(|&i| &p.rows[i])
+                    .filter(|e| e.vma_is_z80_space())
+                {
+                    s.raw_addr = e.lma;
+                    s.addr = e.lma & BUS_ADDR_MASK;
+                }
+            }
+        }
+
         // Sort on the 24-bit address so nearest-preceding search matches what the bus sees; `name` breaks
         // ties so the ordering (and therefore every lookup answer) is deterministic across runs.
         syms.sort_by(|a, b| a.addr.cmp(&b.addr).then_with(|| a.name.cmp(&b.name)));
@@ -3219,6 +3305,9 @@ PHASE COUNT 0
         // 3. And no phase VMA or LMA ever answers an addr→name query. This is the clause a fold breaks:
         //    `Player_1`'s VMA `$400` sits above `EntryPoint` at `$200`, so pushing phase rows into `syms`
         //    would make `$400` resolve to a phase name instead of `EntryPoint+$200`.
+        //    (This holds on THIS fixture because no relocated phase name here is also a `Symbol Table`
+        //    row. When one is, L-18 moves that symbol to its LMA on purpose, so the LMA does answer; the
+        //    `a_z80_phased_name_*` tests pin that on `REAL_SHAPE_LST`. No assertion here changed.)
         for e in t.phase_entries() {
             for a in [e.vma, e.lma] {
                 let named: Vec<&str> = t.symbols_at(a).iter().map(|s| s.name.as_str()).collect();
@@ -3250,8 +3339,11 @@ PHASE COUNT 0
     /// perturbation must be visible through that population's own door, or a leg that changed nothing
     /// would pass by reporting a difference it did not make.
     ///
-    /// The `Player_1` name is deliberate: `phase_fixture` carries it in all three sections, so no leg
-    /// can be satisfied by a name that only one population has ever heard of.
+    /// The `Player_1` name is deliberate in legs 1 and 2: `phase_fixture` carries it in all three
+    /// sections, so neither can be satisfied by a name that only one population has ever heard of.
+    /// Leg 3 perturbs a phase-only row instead, because since L-18 relocating `Player_1`'s phase row
+    /// would also move its symbol (see the leg); its premise check still proves population one did not
+    /// move.
     #[test]
     fn resolves_identically_sees_a_change_in_any_one_of_the_three_populations() {
         let base = phase_fixture();
@@ -3301,9 +3393,15 @@ PHASE COUNT 0
 
         // 3. Population three — a phased symbol's LMA moves. Latent (no wire surface today), and pinned
         //    here so it cannot become the next silent one.
+        //
+        //    The row perturbed is `SfxBlobWinTab`, a PHASE-ONLY name. It used to be `Player_1`'s identity
+        //    row made relocated (LMA `$400` → `$B0400`); since L-18 a relocated row whose name is also a
+        //    `Symbol Table` row MOVES that symbol to its LMA, so that edit changes population one too and
+        //    this leg's premise (`symbols()` byte-identical) went red on it. A phase-only name reaches no
+        //    symbol, so moving its LMA is still a change to population three and nothing else.
         let phase_moved = base.replace(
-            "PHASE Player_1 VMA $00000400 LMA $00000400",
-            "PHASE Player_1 VMA $00000400 LMA $000B0400",
+            "PHASE SfxBlobWinTab VMA $0000845F LMA $0001045F",
+            "PHASE SfxBlobWinTab VMA $0000845F LMA $0002045F",
         );
         assert_ne!(phase_moved, base, "leg 3 changed nothing on disk");
         let m = SymbolTable::parse(&phase_moved).expect("parses");
@@ -3313,13 +3411,376 @@ PHASE COUNT 0
             "leg 3's PREMISE: population one must be byte-identical"
         );
         assert_eq!(
-            m.phase_of("Player_1").map(|p| p.lma),
-            Some(0x000B_0400),
+            m.phase_of("SfxBlobWinTab").map(|p| p.lma),
+            Some(0x0002_045F),
             "leg 3's perturbation must be visible through the phase door"
         );
         assert!(
             !t.resolves_identically(&m),
             "a phase row that moved must not read as an identical table"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // F-PHASED-LABEL-IN-68K-SYMBOLS (ledger L-18, interim rule (b))
+    // ---------------------------------------------------------------------------------------------------
+
+    /// **A listing in the REAL shape**: every phased name appears **twice**, once as an ordinary
+    /// `Symbol Table` row at its VMA (`SoundTablesZ80_Head : 8000 C |`) and once as a `PHASE` row. The
+    /// older `PHASE_TABLE` fixture carries its relocated names in the phase table only, which is why it
+    /// could not see this defect (`docs/2026-09-27-hub-held-items-read.md` §3).
+    ///
+    /// Mirrored on the live `aeon/s4.debug.lst` (2026-09-27): a genuine 68000 routine
+    /// (`Parallax_CheckBoundary`) starts below `$8000` and its local `have_preset` sits at `$801C`, so the
+    /// 68000 code at `$8000-$801B` has a TRUE name to fall back to; two phased names share one VMA (the
+    /// live `MovingTrucks_PitchTable`/`SndDefaultPitchTable` pair); an `__align` pad precedes the LMA
+    /// block, which is what `$0B8000` resolved to before the fix; one phase row is the identity
+    /// (`VMA == LMA`), and one relocated name is phase-only (never in the `Symbol Table`).
+    const REAL_SHAPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ EntryPoint : 200 C |
+ Parallax_CheckBoundary : 7FE0 C |
+ SoundTablesZ80_Head : 8000 C |
+ $engine.parallax$Parallax_CheckBoundary$have_preset : 801C C |
+ Region_Resolve : 8024 C |
+ MovingTrucks_PitchTable : 83D9 C |
+ SndDefaultPitchTable : 83D9 C |
+ Parallax_Update : 83E0 C |
+ IdentityPhased : 9000 C |
+ __align$games.sonic4.dac_banks$0 : A8000 C |
+ Sound_AfterTables : B8700 C |
+ EndOfRom : C0000 C |
+ Player_1 : FFFF8CFA C |
+
+   13 symbols
+    0 unused symbols
+
+  Equate Table (name = value; values, not addresses):
+  ---------------------------------------------------
+
+EQU zone_count = $0000000C
+
+    1 equates
+
+  Phase Table (every address above is a VMA):
+  -------------------------------------------
+
+PHASE-COUNT 5
+PHASE SoundTablesZ80_Head VMA $00008000 LMA $000B8000
+PHASE MovingTrucks_PitchTable VMA $000083D9 LMA $000B83D9
+PHASE SndDefaultPitchTable VMA $000083D9 LMA $000B83D9
+PHASE IdentityPhased VMA $00009000 LMA $00009000
+PHASE PhaseOnlyZ80 VMA $00008500 LMA $000B8500
+";
+
+    /// The listing's own `Symbol Table` address for `name`, read from the TEXT — not through the parser
+    /// under test — so every expectation below is derived from the fixture's rows, not copied numbers.
+    fn listed_addr(text: &str, name: &str) -> Option<u32> {
+        let needle = format!(" {name} : ");
+        text.lines()
+            .find_map(|l| l.strip_prefix(needle.as_str()))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+    }
+
+    fn real_shape() -> SymbolTable {
+        let t = SymbolTable::parse(REAL_SHAPE_LST).expect("real-shape fixture parses");
+        // Anti-vacuity: a damaged parse would make every assertion below about the wrong table.
+        assert!(
+            t.is_intact(),
+            "the real-shape fixture must be a whole listing"
+        );
+        assert_eq!(t.matches_declared_phase(), Some(true));
+        t
+    }
+
+    /// The relocated rows that ALSO appear in the `Symbol Table` — the population L-18 is about — with
+    /// the fixture-text premise checked: each is listed at its VMA, which is the whole defect.
+    fn relocated_dual_rows(t: &SymbolTable) -> Vec<PhaseEntry> {
+        let rows: Vec<PhaseEntry> = t
+            .phase_entries()
+            .iter()
+            .filter(|e| e.is_relocated() && listed_addr(REAL_SHAPE_LST, &e.name).is_some())
+            .cloned()
+            .collect();
+        assert_eq!(
+            rows.len(),
+            3,
+            "fixture premise: three relocated names in both sections"
+        );
+        for e in &rows {
+            assert_eq!(
+                listed_addr(REAL_SHAPE_LST, &e.name),
+                Some(e.vma),
+                "fixture premise: `{}` is filed in the Symbol Table at its VMA",
+                e.name
+            );
+        }
+        rows
+    }
+
+    /// **Forward: a Z80-phased name's 68000 address is its LMA** — where the 68000 actually sees the
+    /// bytes. Before the fix `address_of("SoundTablesZ80_Head")` answered `$008000`, unrelated 68000 code.
+    #[test]
+    fn a_z80_phased_name_resolves_forward_to_its_lma() {
+        let t = real_shape();
+        for e in relocated_dual_rows(&t) {
+            let lma = e.lma & BUS_ADDR_MASK;
+            assert_eq!(
+                t.address_of(&e.name),
+                Some(lma),
+                "`{}`: address_of must answer the LMA ${:06X}, not the Z80 VMA ${:X}",
+                e.name,
+                lma,
+                e.vma
+            );
+            let s = t.by_name(&e.name).expect("still a symbol");
+            assert_eq!(s.addr, lma, "`{}` by_name().addr", e.name);
+            assert_eq!(
+                s.raw_addr, e.lma,
+                "`{}`: raw_addr is the phase row's own spelling of the LMA",
+                e.name
+            );
+            assert_eq!(s.addr, s.raw_addr & BUS_ADDR_MASK, "trap-2 invariant");
+            // The VMA is not lost: it is kept on the phase row.
+            assert_eq!(t.phase_of(&e.name).map(|p| p.vma), Some(e.vma));
+        }
+    }
+
+    /// **Reverse at the VMA: the phased name is gone, and the genuine 68000 label wins.** Every address
+    /// from the VMA up to the next real 68000 label (`have_preset`) must resolve to the 68000 routine
+    /// that actually contains it, never to `SoundTablesZ80_Head+…`.
+    #[test]
+    fn a_z80_phased_name_never_names_a_68000_address_at_its_vma() {
+        let t = real_shape();
+        for e in relocated_dual_rows(&t) {
+            let named: Vec<&str> = t
+                .symbols_at(e.vma)
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            assert!(
+                !named.contains(&e.name.as_str()),
+                "`{}` still answers symbols_at(${:X}): {named:?}",
+                e.name,
+                e.vma
+            );
+        }
+
+        // The span `$8000..have_preset`, with its true answer derived from the fixture's rows.
+        let head = t.phase_of("SoundTablesZ80_Head").expect("row").vma;
+        let preset = listed_addr(
+            REAL_SHAPE_LST,
+            "$engine.parallax$Parallax_CheckBoundary$have_preset",
+        )
+        .expect("row");
+        let routine = listed_addr(REAL_SHAPE_LST, "Parallax_CheckBoundary").expect("row");
+        assert!(routine < head && head < preset, "fixture premise");
+        for a in head..preset {
+            let r = t.resolve(a).expect("68000 code there has a name");
+            assert_eq!(
+                (r.symbol.name.as_str(), r.displacement),
+                ("Parallax_CheckBoundary", a - routine),
+                "resolve(${a:06X})"
+            );
+        }
+        let r = t.resolve(preset).expect("has a name");
+        assert_eq!(
+            r.symbol.name,
+            "$engine.parallax$Parallax_CheckBoundary$have_preset"
+        );
+        assert_eq!(r.displacement, 0);
+
+        // The shared-VMA pair: `$83D9` is inside `Region_Resolve`, not a pitch table.
+        let pitch = t.phase_of("SndDefaultPitchTable").expect("row").vma;
+        let region = listed_addr(REAL_SHAPE_LST, "Region_Resolve").expect("row");
+        let r = t.resolve(pitch).expect("has a name");
+        assert_eq!(
+            (r.symbol.name.as_str(), r.displacement),
+            ("Region_Resolve", pitch - region)
+        );
+    }
+
+    /// **Reverse at the LMA: the phased name names where the 68000 sees it.** Before the fix `$0B8000`
+    /// resolved to `__align$games.sonic4.dac_banks$0+$8000`.
+    #[test]
+    fn a_z80_phased_name_names_its_lma() {
+        let t = real_shape();
+        for e in relocated_dual_rows(&t) {
+            let lma = e.lma & BUS_ADDR_MASK;
+            let named: Vec<&str> = t.symbols_at(lma).iter().map(|s| s.name.as_str()).collect();
+            assert!(
+                named.contains(&e.name.as_str()),
+                "`{}` must answer symbols_at(${lma:06X}); got {named:?}",
+                e.name
+            );
+        }
+        // Nearest-preceding inside the block: between the head's LMA and the pitch tables' LMA, the head
+        // is the answer, with the displacement measured from the LMA.
+        let head = t.phase_of("SoundTablesZ80_Head").expect("row").lma;
+        let pitch = t.phase_of("SndDefaultPitchTable").expect("row").lma;
+        for k in [0u32, 1, 0x10, pitch - head - 1] {
+            let r = t.resolve(head + k).expect("has a name");
+            assert_eq!(
+                (r.symbol.name.as_str(), r.displacement),
+                ("SoundTablesZ80_Head", k),
+                "resolve(${:06X})",
+                head + k
+            );
+        }
+        // Past the tables, the next genuine 68000 label takes over again.
+        let after = listed_addr(REAL_SHAPE_LST, "Sound_AfterTables").expect("row");
+        assert_eq!(
+            t.resolve(after).expect("named").symbol.name,
+            "Sound_AfterTables"
+        );
+    }
+
+    /// **Controls: what L-18 must NOT move.** A `VMA == LMA` row, a phase-only name, and every
+    /// non-phased label answer exactly as the listing writes them.
+    #[test]
+    fn identity_phase_rows_phase_only_names_and_unphased_labels_are_unchanged() {
+        let t = real_shape();
+        let id = t.phase_of("IdentityPhased").expect("row");
+        assert!(!id.is_relocated(), "fixture premise");
+        assert_eq!(listed_addr(REAL_SHAPE_LST, "IdentityPhased"), Some(id.vma));
+        assert_eq!(t.address_of("IdentityPhased"), Some(id.vma));
+        assert_eq!(
+            t.resolve(id.vma).expect("named").symbol.name,
+            "IdentityPhased"
+        );
+
+        // A relocated name that is ONLY a phase row stays out of the symbol table: nothing is invented.
+        let only = t.phase_of("PhaseOnlyZ80").expect("row");
+        assert!(only.is_relocated());
+        assert!(t.by_name("PhaseOnlyZ80").is_none());
+        assert!(t.address_of("PhaseOnlyZ80").is_none());
+        for a in [only.vma, only.lma] {
+            assert!(t.symbols_at(a).iter().all(|s| s.name != "PhaseOnlyZ80"));
+        }
+
+        // Every label with no relocated phase row sits exactly where the listing put it.
+        for s in t.symbols() {
+            if t.phase_of(&s.name).is_some_and(PhaseEntry::is_relocated) {
+                continue;
+            }
+            assert_eq!(
+                Some(s.raw_addr),
+                listed_addr(REAL_SHAPE_LST, &s.name),
+                "`{}` moved",
+                s.name
+            );
+        }
+        assert_eq!(
+            t.len(),
+            13,
+            "the rule relocates rows; it never adds or drops one"
+        );
+    }
+
+    /// **A listing with no `Phase Table` is unchanged — the stated limit.** The same symbol rows, the
+    /// phase section cut off: there is no signal, so `SoundTablesZ80_Head` keeps its listed address in
+    /// both directions, exactly as before L-18 (the frozen `fixtures/aeon/` listings are this shape).
+    #[test]
+    fn a_listing_with_no_phase_table_keeps_todays_behaviour() {
+        let text = REAL_SHAPE_LST
+            .split("  Phase Table")
+            .next()
+            .expect("the part before the phase section");
+        let t = SymbolTable::parse(text).expect("parses");
+        assert!(!t.has_phase_table(), "premise: no phase section");
+        assert!(t.is_intact());
+        for s in t.symbols() {
+            assert_eq!(
+                Some(s.raw_addr),
+                listed_addr(text, &s.name),
+                "`{}` moved",
+                s.name
+            );
+        }
+        let head = listed_addr(text, "SoundTablesZ80_Head").expect("row");
+        assert_eq!(t.address_of("SoundTablesZ80_Head"), Some(head));
+        assert_eq!(
+            t.resolve(head + 2)
+                .map(|r| (r.symbol.name.as_str(), r.displacement)),
+            Some(("SoundTablesZ80_Head", 2)),
+            "no signal to act on: the old reverse answer stands"
+        );
+    }
+
+    /// **The demo shape: phased into Z80 RAM, not the bank window.** Mirrored on the live `aeon/demo.lst`
+    /// (2026-09-27): `Z80_IdleProgram` is filed in the `Symbol Table` at its VMA `0` — the Z80's own
+    /// address, where the 68000 bus has the vector table (`Vectors : 0`) — and its local `code_end` at
+    /// `$28`, which made the whole vector table above `$28` resolve to `…$code_end+…`. The rule's premise
+    /// is Z80 *space*, so these move to their LMAs exactly as the bank-window rows do.
+    const DEMO_SHAPE_LST: &str = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ Vectors : 0 C |
+ Z80_IdleProgram : 0 C |
+ $engine.z80_init$Z80_IdleProgram$code_end : 28 C |
+ GameHeader : 100 C |
+ EntryPoint : 200 C |
+ Z80_Sound_Start : 3C8 C |
+ BootData_End : 400 C |
+
+    7 symbols
+    0 unused symbols
+
+  Phase Table (every address above is a VMA):
+  -------------------------------------------
+
+PHASE-COUNT 2
+PHASE Z80_IdleProgram VMA $00000000 LMA $000003C8
+PHASE $engine.z80_init$Z80_IdleProgram$code_end VMA $00000028 LMA $000003F0
+";
+
+    #[test]
+    fn a_z80_ram_phased_name_moves_to_its_lma_like_a_bank_window_one() {
+        let t = SymbolTable::parse(DEMO_SHAPE_LST).expect("parses");
+        assert!(t.is_intact());
+        assert_eq!(t.matches_declared_phase(), Some(true));
+        let rows = t.phase_entries();
+        assert_eq!(rows.len(), 2, "fixture premise");
+        for e in rows {
+            assert!(
+                e.vma_is_z80_space(),
+                "fixture premise: `{}` relocated",
+                e.name
+            );
+            assert_eq!(
+                listed_addr(DEMO_SHAPE_LST, &e.name),
+                Some(e.vma),
+                "fixture premise: `{}` is filed at its VMA",
+                e.name
+            );
+            assert_eq!(t.address_of(&e.name), Some(e.lma), "`{}` forward", e.name);
+            assert!(
+                t.symbols_at(e.vma).iter().all(|s| s.name != e.name),
+                "`{}` still names 68000 ${:06X}",
+                e.name,
+                e.vma
+            );
+            assert!(
+                t.symbols_at(e.lma).iter().any(|s| s.name == e.name),
+                "`{}` must name its LMA ${:06X}",
+                e.name,
+                e.lma
+            );
+        }
+        // The vector table is the vector table again, all the way up to the header.
+        let vectors = listed_addr(DEMO_SHAPE_LST, "Vectors").expect("row");
+        let header = listed_addr(DEMO_SHAPE_LST, "GameHeader").expect("row");
+        for a in vectors..header {
+            let r = t.resolve(a).expect("named");
+            assert_eq!(
+                (r.symbol.name.as_str(), r.displacement),
+                ("Vectors", a - vectors),
+                "resolve(${a:06X})"
+            );
+        }
     }
 }
