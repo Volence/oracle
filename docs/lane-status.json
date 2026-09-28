@@ -1,6 +1,12 @@
 {
-  "focus": "On the hub's go: checking and landing the fix for tools that could wait forever on a lost reply.",
-  "inFlight": [],
+  "focus": "Lost-reply fix landed. Now landing the fix that stops sound-chip labels naming main-processor code.",
+  "inFlight": [
+    {
+      "what": "Landing gate for the sound-chip label fix",
+      "where": "main, tools/land.sh",
+      "agent": false
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,21 +14,14 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "After the lost-reply fix lands and the hub is told; the label fix follows it.",
+  "nextBoundary": "When the label fix's landing gate finishes and the hub is told.",
   "queue": [
     {
       "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
-      "state": "next",
+      "state": "doing",
       "size": "M",
       "blockedBy": null,
-      "title": "Sound-processor labels were named as main-processor code at $8000. Tests are written; the stopgap fix was half-done when the last session ended and needs finishing."
-    },
-    {
-      "id": "F-EVENT-EVICTS-RESPONSE",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null,
-      "title": "A flood of events can throw away a queued reply, so a tool waits forever. The fix and its test are written on a branch; they need checking and landing."
+      "title": "Sound-processor labels were naming main-processor code. Fixed and reviewed; its landing gate is running."
     },
     {
       "id": "DATA-DISPLAY-AUDIT",
@@ -42,7 +41,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "blocked",
+      "state": "next",
       "size": "S",
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
@@ -83,5 +82,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-28T03:17:32Z"
+  "updatedAt": "2026-09-28T03:43:51Z"
 }
