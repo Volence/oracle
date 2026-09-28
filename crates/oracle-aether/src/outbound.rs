@@ -19,7 +19,7 @@
 //!
 //! **The emulator thread never writes to a socket and never waits on one.** It calls
 //! [`Outbound::push_event`], which is O(1) under a mutex that is *never held across a write*, and which
-//! **drops the oldest queued message** rather than waiting when the queue is full. A dropped event is
+//! **drops the oldest queued event** rather than waiting when the queue is full. A dropped event is
 //! counted and the count is reported on the next message the client does read, so the loss is visible
 //! rather than silent.
 //!
@@ -27,9 +27,30 @@
 //! because it is called only from the connection's own reader thread — a client that floods requests
 //! while refusing to read its own replies stalls nothing but itself.
 //!
+//! # Eviction touches events only — never a response
+//!
+//! A queued response is **never evicted**. Discarding one would leave a JSON-RPC request unanswered
+//! forever, and would count as a "dropped event" something that was not an event (contract §2.3:
+//! `droppedEvents` counts *events discarded*). Until F-EVENT-EVICTS-RESPONSE the queue was one lane and
+//! eviction popped its front whatever that entry was; a response queued ahead of an event flood was lost.
+//!
+//! So the queue is two lanes — events and responses — sharing one capacity (their *sum* is bounded, as
+//! the single lane was) and one per-connection sequence counter stamped at push time. The writer always
+//! takes whichever lane head carries the lower sequence number, so **every line that is not dropped
+//! reaches the socket in exactly its push order**, events and responses interleaved as pushed. Eviction
+//! pops the front of the *event* lane only: the oldest queued event, in O(1).
+//!
+//! When the queue is full of responses alone there is no event to evict. The arriving event is then the
+//! one discarded (and counted): the engine must not block, a response must not go, and admitting it
+//! past capacity would let an engine flood grow the queue without bound while the responses at its
+//! head were stuck behind a slow client. That is the only case in which the *newest* event is the one
+//! lost rather than the oldest; the count still reports it.
+//!
 //! ```text
-//!   engine thread ── push_event ──▶ [bounded queue] ──▶ writer thread ──▶ socket
-//!        (never blocks, drops oldest)                    (blocks freely, alone)
+//!   engine thread ── push_event ──▶ [events   ]─┐ merged by
+//!        (never blocks, drops oldest EVENT)      ├─ push seq ─▶ writer thread ──▶ socket
+//!   reader thread ── push_response ▶ [responses]─┘             (blocks freely, alone)
+//!        (waits for space, never evicted)   (events + responses <= capacity)
 //! ```
 
 use std::collections::VecDeque;
@@ -42,14 +63,22 @@ pub const DEFAULT_CAPACITY: usize = 1024;
 
 #[derive(Default)]
 struct Inner {
-    queue: VecDeque<String>,
+    /// Queued server-push events, oldest first, each stamped with its push sequence number. The only
+    /// lane eviction ever touches.
+    events: VecDeque<(u64, String)>,
+    /// Queued responses, oldest first, stamped from the same counter. Never evicted.
+    responses: VecDeque<(u64, String)>,
+    /// Next push sequence number. Both lanes draw from it, so comparing lane heads recovers the exact
+    /// push order. A `u64` at one push per nanosecond wraps after ~584 years.
+    next_seq: u64,
     /// Events discarded because the client was not draining. Reported to the client (`droppedEvents`)
     /// so a gap in the stream is never silent.
     dropped: u64,
     closed: bool,
 }
 
-/// A bounded, drop-oldest outbound message queue shared by a connection's reader, writer and the engine.
+/// A bounded outbound message queue shared by a connection's reader, writer and the engine. When full,
+/// it drops the oldest queued **event**; responses are never dropped (see the module docs).
 pub struct Outbound {
     inner: Mutex<Inner>,
     not_empty: Condvar,
@@ -74,19 +103,29 @@ impl Outbound {
     }
 
     /// Queue a server-push event. **Never blocks and never fails.** When the queue is full the oldest
-    /// queued message is discarded and [`take_dropped`](Self::take_dropped) counts it.
+    /// queued *event* is discarded and [`take_dropped`](Self::take_dropped) counts it; a queued response
+    /// is never touched. If the queue is full of responses alone, this event is the one discarded (and
+    /// counted).
     ///
-    /// Returns `false` once the connection is closed, so a broadcaster can prune it.
+    /// Returns `false` once the connection is closed, so a broadcaster can prune it. A `true` means the
+    /// connection is live, not that this particular event will be delivered.
     pub fn push_event(&self, line: String) -> bool {
         let mut inner = self.lock();
         if inner.closed {
             return false;
         }
-        while inner.queue.len() >= self.capacity {
-            inner.queue.pop_front();
+        // Normally this evicts at most once (the queue never exceeds capacity); a loop keeps the bound
+        // self-healing regardless.
+        while inner.len() >= self.capacity {
+            if inner.events.pop_front().is_none() {
+                // Full of responses: nothing evictable. Drop the arrival instead of blocking.
+                inner.dropped += 1;
+                return true;
+            }
             inner.dropped += 1;
         }
-        inner.queue.push_back(line);
+        let seq = inner.stamp();
+        inner.events.push_back((seq, line));
         drop(inner);
         self.not_empty.notify_one();
         true
@@ -97,7 +136,7 @@ impl Outbound {
     /// own reader thread, never the engine).
     pub fn push_response(&self, line: String) -> bool {
         let mut inner = self.lock();
-        while inner.queue.len() >= self.capacity && !inner.closed {
+        while inner.len() >= self.capacity && !inner.closed {
             inner = self
                 .not_full
                 .wait(inner)
@@ -106,7 +145,8 @@ impl Outbound {
         if inner.closed {
             return false;
         }
-        inner.queue.push_back(line);
+        let seq = inner.stamp();
+        inner.responses.push_back((seq, line));
         drop(inner);
         self.not_empty.notify_one();
         true
@@ -118,7 +158,7 @@ impl Outbound {
     pub fn pop(&self) -> Option<String> {
         let mut inner = self.lock();
         loop {
-            if let Some(line) = inner.queue.pop_front() {
+            if let Some(line) = inner.pop_in_push_order() {
                 drop(inner);
                 self.not_full.notify_one();
                 return Some(line);
@@ -155,7 +195,7 @@ impl Outbound {
 
     /// Current depth — diagnostics and tests only.
     pub fn len(&self) -> usize {
-        self.lock().queue.len()
+        self.lock().len()
     }
 
     /// Whether nothing is queued — diagnostics and tests only.
@@ -170,6 +210,37 @@ impl Outbound {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Inner {
+    /// Total queued across both lanes — the figure capacity bounds.
+    fn len(&self) -> usize {
+        self.events.len() + self.responses.len()
+    }
+
+    fn stamp(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
+    }
+
+    /// Take whichever lane head was pushed first, so the writer sees exactly the push order of every
+    /// line that was not dropped.
+    fn pop_in_push_order(&mut self) -> Option<String> {
+        let lane = match (self.events.front(), self.responses.front()) {
+            (Some((e, _)), Some((r, _))) => {
+                if e < r {
+                    &mut self.events
+                } else {
+                    &mut self.responses
+                }
+            }
+            (Some(_), None) => &mut self.events,
+            (None, Some(_)) => &mut self.responses,
+            (None, None) => return None,
+        };
+        lane.pop_front().map(|(_, line)| line)
     }
 }
 
@@ -288,5 +359,124 @@ mod tests {
         );
         assert_eq!(q.pop(), None);
         assert!(!q.push_event("late".into()));
+    }
+
+    /// Drain everything currently queued without blocking on an empty queue.
+    fn drain(q: &Outbound) -> Vec<String> {
+        let mut out = Vec::new();
+        while !q.is_empty() {
+            out.push(q.pop().expect("non-empty queue yields a line"));
+        }
+        out
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (i). A queued response must survive an event flood of 10x capacity and be
+    /// delivered, and `take_dropped` must count exactly the events that were never delivered -- nothing
+    /// else. Before the fix, eviction popped the queue front whatever its kind, so the response was
+    /// discarded (the request was never answered) and counted as a "dropped event".
+    #[test]
+    fn a_queued_response_survives_an_event_flood() {
+        const CAP: usize = 4;
+        let q = Outbound::new(cap(CAP));
+        assert!(q.push_response("R".into()));
+        let events = 10 * CAP;
+        for i in 0..events {
+            assert!(
+                q.push_event(format!("e{i}")),
+                "push_event never fails on an open queue"
+            );
+        }
+        assert_eq!(q.len(), CAP, "the queue stays bounded by its capacity");
+        let dropped = q.take_dropped();
+        let got = drain(&q);
+        assert!(
+            got.iter().any(|l| l == "R"),
+            "the response was evicted by the event flood: delivered {got:?}"
+        );
+        let delivered_events = got.iter().filter(|l| l.starts_with('e')).count();
+        assert_eq!(
+            dropped as usize,
+            events - delivered_events,
+            "droppedEvents must count only events actually discarded (delivered {got:?})"
+        );
+        assert_eq!(
+            got,
+            ["R", "e37", "e38", "e39"],
+            "the newest events survive, behind the response"
+        );
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (ii). Survivors reach the writer in exactly their push order: a response
+    /// still follows the events pushed before it and precedes those pushed after it.
+    #[test]
+    fn survivors_are_written_in_push_order() {
+        let q = Outbound::new(cap(5));
+        let pushed = ["e0", "R1", "e1", "R2", "e2", "e3", "e4", "R3-waits", "e5"];
+        q.push_event("e0".into());
+        q.push_response("R1".into());
+        q.push_event("e1".into());
+        q.push_response("R2".into());
+        q.push_event("e2".into()); // full: [e0 R1 e1 R2 e2]
+        q.push_event("e3".into()); // evicts e0
+        q.push_event("e4".into()); // evicts e1
+        let dropped = q.take_dropped();
+        let got = drain(&q);
+        assert_eq!(
+            got,
+            ["R1", "R2", "e2", "e3", "e4"],
+            "survivors in push order, both responses kept"
+        );
+        assert_eq!(dropped, 2, "only e0 and e1 were discarded");
+        // Survivors are a subsequence of the push order -- nothing reordered.
+        let mut it = pushed.iter();
+        for line in &got {
+            assert!(
+                it.any(|p| p == line),
+                "{line} arrived out of push order in {got:?}"
+            );
+        }
+
+        // Interleaving with events that survive on both sides of a response.
+        let q = Outbound::new(cap(4));
+        q.push_response("R1".into());
+        q.push_event("e0".into());
+        q.push_event("e1".into());
+        q.push_response("R2".into()); // full: [R1 e0 e1 R2]
+        q.push_event("e2".into()); // evicts e0 -- the oldest EVENT, not R1
+        assert_eq!(drain(&q), ["R1", "e1", "R2", "e2"]);
+        assert_eq!(q.take_dropped(), 1);
+    }
+
+    /// F-EVENT-EVICTS-RESPONSE (iii). A queue full of responses only: an arriving event must neither
+    /// block nor evict a response. It is the one message that may go, so it is dropped and counted.
+    #[test]
+    fn an_event_into_a_queue_full_of_responses_is_dropped_not_the_responses() {
+        let q = Outbound::new(cap(2));
+        assert!(q.push_response("R1".into()));
+        assert!(q.push_response("R2".into()));
+        let start = Instant::now();
+        assert!(
+            q.push_event("e0".into()),
+            "the queue is open, so the push is accepted (and dropped)"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "push_event must not block"
+        );
+        assert_eq!(q.len(), 2, "capacity still bounds the queue");
+        assert_eq!(
+            q.take_dropped(),
+            1,
+            "the incoming event is the one discarded, and it is counted"
+        );
+        assert_eq!(
+            drain(&q),
+            ["R1", "R2"],
+            "both responses delivered, in order"
+        );
+        // With room again, events flow normally.
+        assert!(q.push_event("e1".into()));
+        assert_eq!(drain(&q), ["e1"]);
+        assert_eq!(q.take_dropped(), 0);
     }
 }
