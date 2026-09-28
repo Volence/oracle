@@ -249,7 +249,8 @@
 //!
 //! Sigil *drops* its plumbing symbols (`__align$…`, `$…$asm<N>$…`) when it builds the on-ROM appendix. We
 //! keep them — they are real addresses and make nearest-preceding resolution *tighter* — but flag them via
-//! [`Symbol::is_synthetic`] so a caller can prefer a source-meaningful name.
+//! [`Symbol::is_synthetic`], and [`SymbolTable::resolve`] prefers a source-meaningful name wherever one
+//! shares the winning address (a pad answers only where it is the only name at the nearest address).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -412,7 +413,8 @@ pub struct Symbol {
     pub unused: bool,
     /// Compiler plumbing rather than a name anyone wrote — an `__align$…` pad or a synthetic `asm<N>`
     /// block scope. Sigil drops these from the on-ROM appendix; we keep them (a closer nearest-preceding
-    /// answer) but mark them so a caller can prefer a source-meaningful name.
+    /// answer) but mark them, and [`SymbolTable::resolve`] prefers a source-meaningful name at a shared
+    /// address.
     pub is_synthetic: bool,
     /// Some other symbol in the same table shares this [`demangled`](Symbol::demangled) spelling at a
     /// **different** address, so the readable name does not identify a location on its own. Real and not
@@ -1399,8 +1401,16 @@ impl SymbolTable {
     /// RAM symbol returns `None` instead of the last ROM symbol plus a ~15 MB displacement, and an address
     /// in an unmapped gap resolves to nothing at all.
     ///
-    /// When several symbols share the winning address, the last in `(addr, name)` order is returned —
-    /// deterministic, and [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
+    /// **Which name answers when several share the winning address.** The winning *address* is chosen
+    /// first, over every symbol including plumbing — so a synthetic label ([`Symbol::is_synthetic`]:
+    /// an `__align$…` pad or an `asm<N>` block scope) that is nearer than any written label still
+    /// answers, and resolution never skips back past it to an earlier real name (keeping plumbing exists
+    /// to make this search *tighter*). Then, among the symbols at that one address, a **non-synthetic**
+    /// symbol is preferred over a synthetic one; within each class the last in `(addr, name)` order
+    /// wins, as before — deterministic. So at aeon's `$3C8`, where `Z80_Sound_Start` and
+    /// `__align$engine.boot_data$0` coincide, the written name answers, where the old
+    /// last-in-name-order rule let the pad win because `_` sorts after every capital
+    /// (F-REVERSE-PREFERS-SYNTHETIC). [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
     ///
     /// Forward-only symbols never answer here ([`Symbol::resolves_in_reverse`]): an AS `-` row may hold a
     /// bare constant, and nearest-preceding search over constants is how a low address acquires a
@@ -1408,10 +1418,19 @@ impl SymbolTable {
     pub fn resolve(&self, addr: u32) -> Option<Resolution<'_>> {
         let a = addr & BUS_ADDR_MASK;
         let idx = self.rev.partition_point(|&i| self.syms[i].addr <= a);
-        let sym = &self.syms[self.rev[idx.checked_sub(1)?]];
-        if AddrSpace::of(sym.addr) != AddrSpace::of(a) {
+        let last = &self.syms[self.rev[idx.checked_sub(1)?]];
+        if AddrSpace::of(last.addr) != AddrSpace::of(a) {
             return None;
         }
+        // Among the aliases at the winning address (the run of `rev` ending at `idx`), the last written
+        // name, falling back to the last name of any kind only when plumbing is all there is.
+        let at = self.rev[..idx].partition_point(|&i| self.syms[i].addr < last.addr);
+        let sym = self.rev[at..idx]
+            .iter()
+            .rev()
+            .map(|&i| &self.syms[i])
+            .find(|s| !s.is_synthetic)
+            .unwrap_or(last);
         Some(Resolution {
             symbol: sym,
             displacement: a - sym.addr,
