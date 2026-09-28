@@ -249,7 +249,8 @@
 //!
 //! Sigil *drops* its plumbing symbols (`__align$…`, `$…$asm<N>$…`) when it builds the on-ROM appendix. We
 //! keep them — they are real addresses and make nearest-preceding resolution *tighter* — but flag them via
-//! [`Symbol::is_synthetic`] so a caller can prefer a source-meaningful name.
+//! [`Symbol::is_synthetic`], and [`SymbolTable::resolve`] prefers a source-meaningful name wherever one
+//! shares the winning address (a pad answers only where it is the only name at the nearest address).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -412,7 +413,8 @@ pub struct Symbol {
     pub unused: bool,
     /// Compiler plumbing rather than a name anyone wrote — an `__align$…` pad or a synthetic `asm<N>`
     /// block scope. Sigil drops these from the on-ROM appendix; we keep them (a closer nearest-preceding
-    /// answer) but mark them so a caller can prefer a source-meaningful name.
+    /// answer) but mark them, and [`SymbolTable::resolve`] prefers a source-meaningful name at a shared
+    /// address.
     pub is_synthetic: bool,
     /// Some other symbol in the same table shares this [`demangled`](Symbol::demangled) spelling at a
     /// **different** address, so the readable name does not identify a location on its own. Real and not
@@ -1399,8 +1401,16 @@ impl SymbolTable {
     /// RAM symbol returns `None` instead of the last ROM symbol plus a ~15 MB displacement, and an address
     /// in an unmapped gap resolves to nothing at all.
     ///
-    /// When several symbols share the winning address, the last in `(addr, name)` order is returned —
-    /// deterministic, and [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
+    /// **Which name answers when several share the winning address.** The winning *address* is chosen
+    /// first, over every symbol including plumbing — so a synthetic label ([`Symbol::is_synthetic`]:
+    /// an `__align$…` pad or an `asm<N>` block scope) that is nearer than any written label still
+    /// answers, and resolution never skips back past it to an earlier real name (keeping plumbing exists
+    /// to make this search *tighter*). Then, among the symbols at that one address, a **non-synthetic**
+    /// symbol is preferred over a synthetic one; within each class the last in `(addr, name)` order
+    /// wins, as before — deterministic. So at aeon's `$3C8`, where `Z80_Sound_Start` and
+    /// `__align$engine.boot_data$0` coincide, the written name answers, where the old
+    /// last-in-name-order rule let the pad win because `_` sorts after every capital
+    /// (F-REVERSE-PREFERS-SYNTHETIC). [`symbols_at`](Self::symbols_at) exposes the full set of aliases.
     ///
     /// Forward-only symbols never answer here ([`Symbol::resolves_in_reverse`]): an AS `-` row may hold a
     /// bare constant, and nearest-preceding search over constants is how a low address acquires a
@@ -1408,10 +1418,19 @@ impl SymbolTable {
     pub fn resolve(&self, addr: u32) -> Option<Resolution<'_>> {
         let a = addr & BUS_ADDR_MASK;
         let idx = self.rev.partition_point(|&i| self.syms[i].addr <= a);
-        let sym = &self.syms[self.rev[idx.checked_sub(1)?]];
-        if AddrSpace::of(sym.addr) != AddrSpace::of(a) {
+        let last = &self.syms[self.rev[idx.checked_sub(1)?]];
+        if AddrSpace::of(last.addr) != AddrSpace::of(a) {
             return None;
         }
+        // Among the aliases at the winning address (the run of `rev` ending at `idx`), the last written
+        // name, falling back to the last name of any kind only when plumbing is all there is.
+        let at = self.rev[..idx].partition_point(|&i| self.syms[i].addr < last.addr);
+        let sym = self.rev[at..idx]
+            .iter()
+            .rev()
+            .map(|&i| &self.syms[i])
+            .find(|s| !s.is_synthetic)
+            .unwrap_or(last);
         Some(Resolution {
             symbol: sym,
             displacement: a - sym.addr,
@@ -2397,6 +2416,77 @@ EQU zone_count = $0000000C
         // And the promise holds everywhere the exception does not apply, in the same table.
         let o = t.resolve(0x310).expect("an exact hit");
         assert_eq!(t.address_of(o.name()), Some(o.symbol.addr));
+    }
+
+    /// F-REVERSE-PREFERS-SYNTHETIC: **at a shared address, a name a person wrote beats toolchain
+    /// plumbing** — but plumbing still answers where it is the only name, because keeping it exists to
+    /// make nearest-preceding resolution *tighter*.
+    ///
+    /// Measured live 2026-09-28 on aeon's `demo.lst`: `$3C8` carries `Z80_Sound_End`, `Z80_Sound_Start`
+    /// and `__align$engine.boot_data$0`, and reverse lookup answered the pad, because the old rule took
+    /// the last symbol in `(addr, name)` order and `_` (0x5F) sorts after every capital. The `$3C8` rows
+    /// below mirror that listing. The `$500` pair is the same defect in the other synthetic class: a
+    /// real proc-local `$mod$Blk$top` and a synthetic `$mod$asm1$x`, where `a` (0x61) sorts after `B`.
+    #[test]
+    fn reverse_lookup_prefers_a_written_name_over_plumbing_at_one_address() {
+        let listing = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ Boot_Start : 300 C |
+ Sound_End : 3C8 C |
+ Sound_Start : 3C8 C |
+ __align$engine.boot_data$0 : 3C8 C |
+ Code_Top : 400 C |
+ __align$engine.tail$1 : 410 C |
+ $mod$Blk$top : 500 C |
+ $mod$asm1$x : 500 C |
+ $mod$asm2$y : 600 C |
+ __align$z$0 : 600 C |
+
+   10 symbols
+    0 unused symbols
+";
+        let t = SymbolTable::parse(listing).expect("parses");
+        assert_eq!(
+            t.symbols_at(0x3C8).len(),
+            3,
+            "all three aliases stay reachable"
+        );
+
+        // A real name shares the address with a pad: the real name answers, last in name order among
+        // the real ones (`Sound_Start` after `Sound_End`) — the old deterministic order, per class.
+        for (q, disp) in [(0x3C8u32, 0u32), (0x3D0, 8)] {
+            let r = t.resolve(q).expect("ROM, above Boot_Start");
+            assert_eq!(r.symbol.name, "Sound_Start", "at {q:#X}");
+            assert!(!r.symbol.is_synthetic);
+            assert_eq!(r.displacement, disp);
+        }
+        // The asm<N> class, same rule.
+        let r = t.resolve(0x500).unwrap();
+        assert_eq!(r.symbol.name, "$mod$Blk$top");
+        assert!(!r.symbol.is_synthetic);
+
+        // A pad ALONE at its address is still the nearest-preceding answer: $414 is `__align…$1`+$4,
+        // never `Code_Top`+$14 — skipping back to an earlier real label would undo the tightening.
+        for (q, disp) in [(0x410u32, 0u32), (0x414, 4)] {
+            let r = t.resolve(q).unwrap();
+            assert_eq!(r.symbol.name, "__align$engine.tail$1", "at {q:#X}");
+            assert!(r.symbol.is_synthetic);
+            assert_eq!(r.displacement, disp);
+        }
+        // Only plumbing at an address: the old order decides (`__align…` after `$mod…`).
+        let r = t.resolve(0x600).unwrap();
+        assert_eq!(r.symbol.name, "__align$z$0");
+        assert!(r.symbol.is_synthetic);
+        assert_eq!(
+            t.resolve_within(0x604, 0x10).unwrap().symbol.name,
+            "__align$z$0"
+        );
+        assert_eq!(
+            t.resolve_within(0x3CC, 0x10).unwrap().symbol.name,
+            "Sound_Start"
+        );
     }
 
     #[test]
