@@ -24,6 +24,13 @@
       "title": "Sound-processor labels were naming main-processor code. Fixed and reviewed; its landing gate is running."
     },
     {
+      "id": "F-FIRST-PRESENT-RUNTIME-SERVE",
+      "title": "Starting the tool server from the toolbar mid-session can leave one frame where a tool asking for the screen is told there is none. Needs a test that proves it, then a fix.",
+      "state": "next",
+      "size": "S",
+      "blockedBy": null
+    },
+    {
       "id": "DATA-DISPLAY-AUDIT",
       "state": "blocked",
       "size": "L",
@@ -41,7 +48,7 @@
     },
     {
       "id": "M24-PARCEL-4-INT-LEVEL",
-      "state": "next",
+      "state": "blocked",
       "size": "S",
       "blockedBy": "your ear: card d-51. The kit is ready at ~/sonic_hacks/listen/d51/ (README.txt)",
       "project": "LENS-PASS",
@@ -82,5 +89,5 @@
   ],
   "awaiting": null,
   "atBoundary": false,
-  "updatedAt": "2026-09-28T03:43:51Z"
+  "updatedAt": "2026-09-28T03:44:20Z"
 }
