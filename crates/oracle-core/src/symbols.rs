@@ -2399,6 +2399,77 @@ EQU zone_count = $0000000C
         assert_eq!(t.address_of(o.name()), Some(o.symbol.addr));
     }
 
+    /// F-REVERSE-PREFERS-SYNTHETIC: **at a shared address, a name a person wrote beats toolchain
+    /// plumbing** — but plumbing still answers where it is the only name, because keeping it exists to
+    /// make nearest-preceding resolution *tighter*.
+    ///
+    /// Measured live 2026-09-28 on aeon's `demo.lst`: `$3C8` carries `Z80_Sound_End`, `Z80_Sound_Start`
+    /// and `__align$engine.boot_data$0`, and reverse lookup answered the pad, because the old rule took
+    /// the last symbol in `(addr, name)` order and `_` (0x5F) sorts after every capital. The `$3C8` rows
+    /// below mirror that listing. The `$500` pair is the same defect in the other synthetic class: a
+    /// real proc-local `$mod$Blk$top` and a synthetic `$mod$asm1$x`, where `a` (0x61) sorts after `B`.
+    #[test]
+    fn reverse_lookup_prefers_a_written_name_over_plumbing_at_one_address() {
+        let listing = "\
+  Symbol Table (* = unused):
+  --------------------------
+
+ Boot_Start : 300 C |
+ Sound_End : 3C8 C |
+ Sound_Start : 3C8 C |
+ __align$engine.boot_data$0 : 3C8 C |
+ Code_Top : 400 C |
+ __align$engine.tail$1 : 410 C |
+ $mod$Blk$top : 500 C |
+ $mod$asm1$x : 500 C |
+ $mod$asm2$y : 600 C |
+ __align$z$0 : 600 C |
+
+   10 symbols
+    0 unused symbols
+";
+        let t = SymbolTable::parse(listing).expect("parses");
+        assert_eq!(
+            t.symbols_at(0x3C8).len(),
+            3,
+            "all three aliases stay reachable"
+        );
+
+        // A real name shares the address with a pad: the real name answers, last in name order among
+        // the real ones (`Sound_Start` after `Sound_End`) — the old deterministic order, per class.
+        for (q, disp) in [(0x3C8u32, 0u32), (0x3D0, 8)] {
+            let r = t.resolve(q).expect("ROM, above Boot_Start");
+            assert_eq!(r.symbol.name, "Sound_Start", "at {q:#X}");
+            assert!(!r.symbol.is_synthetic);
+            assert_eq!(r.displacement, disp);
+        }
+        // The asm<N> class, same rule.
+        let r = t.resolve(0x500).unwrap();
+        assert_eq!(r.symbol.name, "$mod$Blk$top");
+        assert!(!r.symbol.is_synthetic);
+
+        // A pad ALONE at its address is still the nearest-preceding answer: $414 is `__align…$1`+$4,
+        // never `Code_Top`+$14 — skipping back to an earlier real label would undo the tightening.
+        for (q, disp) in [(0x410u32, 0u32), (0x414, 4)] {
+            let r = t.resolve(q).unwrap();
+            assert_eq!(r.symbol.name, "__align$engine.tail$1", "at {q:#X}");
+            assert!(r.symbol.is_synthetic);
+            assert_eq!(r.displacement, disp);
+        }
+        // Only plumbing at an address: the old order decides (`__align…` after `$mod…`).
+        let r = t.resolve(0x600).unwrap();
+        assert_eq!(r.symbol.name, "__align$z$0");
+        assert!(r.symbol.is_synthetic);
+        assert_eq!(
+            t.resolve_within(0x604, 0x10).unwrap().symbol.name,
+            "__align$z$0"
+        );
+        assert_eq!(
+            t.resolve_within(0x3CC, 0x10).unwrap().symbol.name,
+            "Sound_Start"
+        );
+    }
+
     #[test]
     fn scope_tree_splits_on_dollar() {
         let t = table();
