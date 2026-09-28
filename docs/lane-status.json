@@ -1,12 +1,6 @@
 {
-  "focus": "Lost-reply fix landed. Now landing the fix that stops sound-chip labels naming main-processor code.",
-  "inFlight": [
-    {
-      "what": "Landing gate for the sound-chip label fix",
-      "where": "main, tools/land.sh",
-      "agent": false
-    }
-  ],
+  "focus": "Both small bug fixes are landed and pushed. Nothing running.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,15 +8,8 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the label fix's landing gate finishes and the hub is told.",
+  "nextBoundary": "Now: nothing running, everything committed and pushed.",
   "queue": [
-    {
-      "id": "F-PHASED-LABEL-IN-68K-SYMBOLS",
-      "state": "doing",
-      "size": "M",
-      "blockedBy": null,
-      "title": "Sound-processor labels were naming main-processor code. Fixed and reviewed; its landing gate is running."
-    },
     {
       "id": "F-FIRST-PRESENT-RUNTIME-SERVE",
       "title": "Starting the tool server from the toolbar mid-session can leave one frame where a tool asking for the screen is told there is none. Needs a test that proves it, then a fix.",
@@ -87,7 +74,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-28T03:44:20Z"
+  "awaiting": "your go (or the hub's) for the next small fix: starting the tool server mid-session can lose one screen answer",
+  "atBoundary": true,
+  "updatedAt": "2026-09-28T04:04:23Z"
 }
