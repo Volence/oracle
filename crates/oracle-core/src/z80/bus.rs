@@ -431,6 +431,67 @@ mod tests {
         );
     }
 
+    /// **Banks at and above 1 MiB (latch `$20`+) through the serial latch, on an image the size of aeon's
+    /// woven clip ROM.** Canonical games keep their Z80 banks below `$20`, so a 5-bit (1 MiB) latch mask
+    /// or a 1 MiB image mirror would pass every older test while aliasing `$21` onto `$01`. aeon's
+    /// `s4.s2clip.debug.bin` (crc32 0b8c65d7, 1,200,274 B) puts `Dac_SharedBank_Start` at `$100000`
+    /// (latch `$20`), its song bank at `$108000` (latch `$21`) and `SongBank2_Head` at `$110000` (latch
+    /// `$22`); its last byte `$125091` sits in page `$24`. Each byte of the synthetic image is a function
+    /// of its own offset (`page * 37 ^ offset`), so a read that lands on the wrong page returns a
+    /// different byte. The bank is loaded the way the Z80 driver does it: nine `$6000` writes, LSB-first,
+    /// only bit 0 of each write counting (the other seven bits are set to junk here to prove that).
+    /// `docs/2026-09-28-woven-music-bank-check.md`.
+    #[test]
+    fn bank_window_reads_rom_above_one_mebibyte_via_serial_latch() {
+        const IMAGE_LEN: usize = 1_200_274; // aeon s4.s2clip.debug.bin, crc32 0b8c65d7
+        let byte_at = |i: usize| (((i >> 15) as u8).wrapping_mul(37)) ^ (i as u8);
+        let rom: Vec<u8> = (0..IMAGE_LEN).map(byte_at).collect();
+        let mut ram = vec![0u8; Z80_RAM_SIZE];
+        let mut work = vec![0u8; RAM_SIZE];
+        let mut bank = 0u16;
+        let mut sink = ();
+        let mut fm = Ym2612::new();
+        let mut vdp = fresh_vdp();
+        let mut bus = bus_with(
+            &mut ram, &rom, &mut work, &mut bank, &mut fm, &mut vdp, &mut sink,
+        );
+        // Pages $20 ($100000), $21 ($108000), $22 ($110000), and $24 (the page holding the image's end).
+        for page in [0x20u16, 0x21, 0x22, 0x24] {
+            for k in 0..9 {
+                bus.write(0x6000, 0xFE | ((page >> k) & 1) as u8);
+            }
+            assert_eq!(
+                *bus.bank, page,
+                "nine LSB-first writes load page {page:#05X}"
+            );
+            for z in [0x8000u16, 0x8001, 0xC123, 0xF674, 0xFFFF] {
+                let abs = ((page as usize) << 15) | (z as usize & 0x7FFF);
+                let want = if abs < IMAGE_LEN { byte_at(abs) } else { 0xFF };
+                assert_eq!(
+                    bus.read(z),
+                    want,
+                    "page {page:#05X} window ${z:04X} must read ROM ${abs:06X} (no 1 MiB mask or mirror)"
+                );
+            }
+        }
+        // Page $24 straddles the image end: its last in-image byte is real, the next one is open bus.
+        for k in 0..9 {
+            bus.write(0x6000, ((0x24u16 >> k) & 1) as u8);
+        }
+        let last = IMAGE_LEN - 1;
+        let z_last = 0x8000 | (last & 0x7FFF) as u16;
+        assert_eq!(
+            bus.read(z_last),
+            byte_at(last),
+            "last image byte ${last:06X} is mapped"
+        );
+        assert_eq!(
+            bus.read(z_last + 1),
+            0xFF,
+            "one past the image end reads open bus"
+        );
+    }
+
     #[test]
     fn bank_window_reads_rom() {
         let mut ram = vec![0u8; Z80_RAM_SIZE];
