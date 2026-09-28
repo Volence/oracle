@@ -67,7 +67,7 @@
       "title": "Look at a narrow pane beside Screen: cut lines end in '...' and hover shows them. Three buttons sit fully off the edge; wrap or widen is your call."
     }
   ],
-  "awaiting": "whether to take anything new; otherwise the remaining items are your listen (sound-interrupt change) and the look-at-it checks",
+  "awaiting": "your clear: nothing is unbanked, so a fresh session loses nothing. After that, your listen and the look-at-it checks.",
   "atBoundary": true,
-  "updatedAt": "2026-09-28T05:28:07Z"
+  "updatedAt": "2026-09-28T05:47:25Z"
 }
