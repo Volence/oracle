@@ -3242,6 +3242,19 @@ mod loop_tests {
              {status_reply}"
         );
 
+        // …and the deferral is ONE-SHOT per opening. A key that never cleared would still answer both
+        // requests above correctly — every drain would just run at the bottom — but it would put every
+        // drain behind `build_ui` for the rest of the session, where it mirrors a pause adopted before
+        // the bar's own gesture (the hazard `Loop::iterate`'s adoption paragraph describes). That is not
+        // reachable headlessly through a click, so the fact the key reads is pinned instead: a serving
+        // window has published, and the next drain is back at its normal position.
+        turn(&ctx, &mut lp);
+        assert!(
+            lp.published_while_serving,
+            "a serving window has turned since its bus opened and still reads as never having published \
+             — the first-drain deferral would repeat on every iteration"
+        );
+
         drop(lp);
         let _ = std::fs::remove_dir_all(&dir);
     }
