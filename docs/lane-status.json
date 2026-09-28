@@ -1,5 +1,5 @@
 {
-  "focus": "Four small bug fixes landed last night, and every online check on them is green. The rest waits on you.",
+  "focus": "Nothing running. Every test ROM passes and last night's fixes are green online; the rest waits on you.",
   "inFlight": [],
   "blockedOnOwner": [
     {
@@ -69,5 +69,5 @@
   ],
   "awaiting": "Your listen (sound-interrupt kit) and the look-at-it checks; nothing else on the board is free to start.",
   "atBoundary": true,
-  "updatedAt": "2026-09-28T06:30:50Z"
+  "updatedAt": "2026-09-28T07:30:50Z"
 }
