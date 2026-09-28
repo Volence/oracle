@@ -1,6 +1,12 @@
 {
-  "focus": "Three small bug fixes landed tonight and the label fix checked live. Next: a small naming quirk found during that check.",
-  "inFlight": [],
+  "focus": "Three small bug fixes landed tonight. Now: when several names share an address, show the real one, not a padding label.",
+  "inFlight": [
+    {
+      "what": "Real names over padding labels at shared addresses",
+      "where": "branch parcel/reverse-prefers-synthetic",
+      "agent": true
+    }
+  ],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -8,12 +14,12 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "Now: nothing running, everything committed and pushed.",
+  "nextBoundary": "When the naming fix returns and is reviewed and landed; after it, only rows that wait on you remain.",
   "queue": [
     {
       "id": "F-REVERSE-PREFERS-SYNTHETIC",
       "title": "Where several names share one address, the debugger can show a compiler-generated padding label instead of the real one. Found during tonight's live check.",
-      "state": "next",
+      "state": "doing",
       "size": "S",
       "blockedBy": null
     },
@@ -75,6 +81,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": true,
-  "updatedAt": "2026-09-28T04:40:40Z"
+  "atBoundary": false,
+  "updatedAt": "2026-09-28T04:40:58Z"
 }
