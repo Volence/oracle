@@ -1,12 +1,6 @@
 {
-  "focus": "Toolbar-start fix proven real, reviewed and merged; its landing checks are running.",
-  "inFlight": [
-    {
-      "what": "Landing gate for the toolbar-start fix",
-      "where": "main, tools/land.sh",
-      "agent": false
-    }
-  ],
+  "focus": "Three small bug fixes landed tonight. Next I check the label fix on the running emulator myself.",
+  "inFlight": [],
   "blockedOnOwner": [
     {
       "what": "Whether to hear the sound-chip interrupt change before it lands",
@@ -14,15 +8,8 @@
       "id": "d-51"
     }
   ],
-  "nextBoundary": "When the toolbar-start fix's landing gate finishes and the hub is told.",
+  "nextBoundary": "Now: nothing running, everything committed and pushed.",
   "queue": [
-    {
-      "id": "F-FIRST-PRESENT-RUNTIME-SERVE",
-      "title": "Starting the tool server from the toolbar mid-session could tell a tool there was no screen. Proven real and fixed; landing now.",
-      "state": "doing",
-      "size": "S",
-      "blockedBy": null
-    },
     {
       "id": "LIVE-CHECK-PHASED-LABEL",
       "title": "Confirm on the running emulator that the sound-chip label fix shows the right names (I can do this myself, no agent).",
@@ -88,6 +75,6 @@
     }
   ],
   "awaiting": null,
-  "atBoundary": false,
-  "updatedAt": "2026-09-28T04:18:15Z"
+  "atBoundary": true,
+  "updatedAt": "2026-09-28T04:38:52Z"
 }
